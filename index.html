@@ -461,39 +461,188 @@ function checkScheduleForNotifications(){
 }
 
 function getStudentCycleInfo(studentId){
-  let st = data.students.find(s=>s.id === studentId);
-  if(!st) return { currentCycle: 1, totalAttended: 0, currentCycleAttended: 0, debt: 0, isDue: false };
+  let st = data.students.find(s => s.id === studentId);
+  if(!st) return { 
+    currentCycle: 1, totalAttended: 0, currentCycleAttended: 0, debt: 0, isDue: false,
+    payType: "بالشهر", fullPrice: 0, totalPaid: 0, totalLessons: 0, presentCount: 0,
+    lateCount: 0, hwDoneCount: 0, totalExams: 0, goldenPoints: 0, lessonsHistory: [],
+    examsHistory: [], groupsBreakdown: []
+  };
 
-  let stAtt = data.attendance.filter(a => a.studentId === studentId && a.status && (a.status.includes("حاضر") || a.status.includes("متأخر") || a.status.includes("أول حصة")));
+  // 1️⃣ جلب جميع سجلات الطالب وتصنيفها
+  let allStudentAtt = data.attendance.filter(a => a.studentId === studentId);
+
+  let stLessons = allStudentAtt.filter(a => 
+    !a.examId && a.status !== "حضر الامتحان" && a.status !== "اختبار إلكتروني" && a.score === undefined
+  );
+
+  let stAtt = stLessons.filter(a => 
+    a.status && (a.status.includes("حاضر") || a.status.includes("متأخر") || a.status.includes("أول حصة"))
+  );
+
+  let stExams = allStudentAtt.filter(a => 
+    a.examId || a.status === "حضر الامتحان" || a.status === "اختبار إلكتروني" || a.score !== undefined
+  );
+
+  let lessonsHistory = stLessons.sort((a, b) => b.date.localeCompare(a.date)).map(l => ({
+    date: l.date, status: l.status || "—", homework: l.homework || "—",
+    notes: l.notes || "لا توجد ملاحظات", noteType: l.noteType || "عادي", pointsGained: l.pointsGained || 0
+  }));
+
+  let examsHistory = stExams.sort((a, b) => b.date.localeCompare(a.date)).map(e => ({
+    date: e.date,
+    title: e.examTitle || (e.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي"),
+    score: e.score !== undefined ? Number(e.score) : 0, notes: e.notes || "تم التصحيح والتدقيق"
+  }));
+
+  let totalLessons = stLessons.length;
   let totalAttended = stAtt.length;
-  
-  let currentCycle = Math.floor(totalAttended / 4) + 1;
-  let currentCycleAttended = totalAttended % 4;
+  let presentCount = stLessons.filter(a => a.status && (a.status.includes("حاضر") || a.status.includes("أول حصة"))).length;
+  let lateCount = stLessons.filter(a => a.status && a.status.includes("متأخر")).length;
+  let hwDoneCount = stLessons.filter(a => a.homework && a.homework.includes("تم")).length;
+  let totalExams = stExams.length;
+
+  let stRewards = (data.rewards || []).filter(r => r.studentId === studentId);
+  let goldenPoints = stRewards.reduce((acc, r) => acc + Number(r.points || 0), 0);
 
   let stPays = data.payments.filter(p => p.studentId === studentId);
   let totalPaid = stPays.reduce((acc, p) => acc + Number(p.amount || 0), 0);
 
-  let payType = st.payType || "بالشهر";
-  let fullPrice = Number(st.price || 200);
+  // 2️⃣ حساب المجموعات المتعددة ودعم المبالغ والحصص القديمة العائمة
+  let groupsSetup = st.groupsSetup || [];
+  let groupsBreakdown = [];
+  let overallDebt = 0;
 
-  let debt = 0;
-  let isDue = false;
+  if (groupsSetup.length > 0) {
+    // أ) تجميع المدفوعات العامة/القديمة (التي بدون groupId أو المحددة بـ "all")
+    let unassignedPaid = stPays.filter(p => !p.groupId || p.groupId === "all")
+                               .reduce((acc, p) => acc + Number(p.amount || 0), 0);
 
-  if(payType === "بالشهر"){
-    let totalExpectedAmount = currentCycle * fullPrice;
-    debt = Math.max(0, totalExpectedAmount - totalPaid);
-    if(currentCycleAttended === 0 && totalAttended > 0 && debt > 0){
-      isDue = true;
-    } else if(debt > 0){
-      isDue = true;
-    }
+    let assignedLessonIds = new Set();
+
+    // ب) حساب الحصص والتحصيلات المباشرة الخاصة بكل مجموعة
+    let rawBreakdown = groupsSetup.map(gs => {
+      let gObj = data.groups.find(g => g.id === gs.groupId);
+      let gName = gObj ? gObj.name : "مجموعة مجدولة";
+      let gPayType = gs.payType || "بالشهر";
+      let gPrice = Number(gs.price || 0);
+
+      // الحصص المربوطة بالمجموعة صراحة عبر groupId أو اسم المجموعة بالرمز
+      let directLessons = stAtt.filter(a => {
+        let isDirect = a.groupId === gs.groupId || (a.notes && a.notes.includes(gName));
+        if (isDirect) assignedLessonIds.add(a.id || (a.date + "_" + a.studentId + "_" + (a.notes || "")));
+        return isDirect;
+      });
+
+      let directPaid = stPays.filter(p => p.groupId === gs.groupId)
+                             .reduce((acc, p) => acc + Number(p.amount || 0), 0);
+
+      return {
+        groupId: gs.groupId,
+        groupName: gName,
+        payType: gPayType,
+        price: gPrice,
+        attended: directLessons.length,
+        directPaid: directPaid,
+        allocatedPaid: directPaid
+      };
+    });
+
+    // ج) المعالجة الكلية للحصص القديمة العائمة وإسنادها للمجموعات ليتطابق المجموع مع totalAttended
+    let unassignedLessonsCount = stAtt.filter(a => !assignedLessonIds.has(a.id || (a.date + "_" + a.studentId + "_" + (a.notes || ""))) && !a.groupId).length;
+
+    let remainingUnassignedLessons = unassignedLessonsCount;
+    rawBreakdown.forEach(gb => {
+      if (remainingUnassignedLessons > 0) {
+        gb.attended += 1;
+        remainingUnassignedLessons -= 1;
+      }
+
+      let gCycle = Math.floor(gb.attended / 4) + 1;
+      let gCycleAttended = gb.attended % 4;
+      let expected = (gb.payType === "بالشهر") ? (gCycle * gb.price) : (gb.attended * gb.price);
+
+      gb.cycle = gCycle;
+      gb.cycleAttended = gCycleAttended;
+      gb.expected = expected;
+    });
+
+    // د) توزيع رصيد المبالغ القديمة/العامة (unassignedPaid) لتغطية مديونيات المجموعات
+    let remainingUnassignedPaid = unassignedPaid;
+    rawBreakdown.forEach(gb => {
+      let needed = Math.max(0, gb.expected - gb.directPaid);
+      let cover = Math.min(needed, remainingUnassignedPaid);
+      gb.allocatedPaid += cover;
+      remainingUnassignedPaid -= cover;
+      gb.debt = Math.max(0, gb.expected - gb.allocatedPaid);
+    });
+
+    // هـ) بناء المصفوفة النهائية للعرض بنفس البنية
+    groupsBreakdown = rawBreakdown.map(gb => ({
+      groupId: gb.groupId,
+      groupName: gb.groupName,
+      payType: gb.payType,
+      price: gb.price,
+      attended: gb.attended,
+      cycle: gb.cycle,
+      cycleAttended: gb.cycleAttended,
+      paid: gb.allocatedPaid,
+      debt: gb.debt
+    }));
+
+    overallDebt = groupsBreakdown.reduce((acc, g) => acc + g.debt, 0);
+
   } else {
-    let totalExpectedAmount = totalAttended * fullPrice;
-    debt = Math.max(0, totalExpectedAmount - totalPaid);
-    if(debt > 0) isDue = true;
+    // طالب فردي (ليس في مجموعة)
+    let payType = st.payType || "بالشهر";
+    let fullPrice = Number(st.price || 200);
+
+    let currentCycle = Math.floor(totalAttended / 4) + 1;
+    let currentCycleAttended = totalAttended % 4;
+
+    if (payType === "بالشهر") {
+      let expected = currentCycle * fullPrice;
+      overallDebt = Math.max(0, expected - totalPaid);
+    } else {
+      let expected = totalAttended * fullPrice;
+      overallDebt = Math.max(0, expected - totalPaid);
+    }
+
+    groupsBreakdown.push({
+      groupId: null,
+      groupName: "طالب فردي",
+      payType: payType,
+      price: fullPrice,
+      attended: totalAttended,
+      cycle: currentCycle,
+      cycleAttended: currentCycleAttended,
+      paid: totalPaid,
+      debt: overallDebt
+    });
   }
 
-  return { currentCycle, totalAttended, currentCycleAttended, debt, isDue, payType, fullPrice, totalPaid };
+  let mainPayType = st.payType || (groupsSetup.length > 0 ? "مجموعات متعددة" : "بالشهر");
+  let mainPrice = Number(st.price || (groupsBreakdown[0]?.price || 200));
+
+  return { 
+    currentCycle: groupsBreakdown[0]?.cycle || 1, 
+    totalAttended, 
+    currentCycleAttended: groupsBreakdown[0]?.cycleAttended || 0, 
+    debt: overallDebt, 
+    isDue: overallDebt > 0, 
+    payType: mainPayType, 
+    fullPrice: mainPrice, 
+    totalPaid, 
+    totalLessons, 
+    presentCount, 
+    lateCount, 
+    hwDoneCount, 
+    totalExams, 
+    goldenPoints, 
+    lessonsHistory, 
+    examsHistory,
+    groupsBreakdown
+  };
 }
 
 function playBeep(success=true){
@@ -2953,114 +3102,218 @@ function rewardsPage(c){
 }
 
 function renderStudentProfileView(containerId, stId){
-  let s = data.students.find(x=>x.id === stId);
+  let s = data.students.find(x => x.id === stId);
   if(!s) return;
 
+  // جلب بيانات الدورة والنظام المالي المحدثة الشاملة
   let cInfo = getStudentCycleInfo(s.id);
 
-  let stAttendance = data.attendance.filter(a => a.studentId === s.id).sort((a,b)=>b.date.localeCompare(a.date));
-  let totalAtt = stAttendance.length;
-  let presentCount = stAttendance.filter(a => a.status && (a.status.includes("حاضر") || a.status.includes("أول حصة"))).length;
-  let lateCount = stAttendance.filter(a => a.status && a.status.includes("متأخر")).length;
-  let hwDoneCount = stAttendance.filter(a => a.homework && a.homework.includes("تم")).length;
+  // 1️⃣ جلب وتصنيف سجلات الحضور والامتحانات
+  let allStudentAtt = data.attendance.filter(a => a.studentId === s.id);
 
-  let stRewards = data.rewards.filter(r => r.studentId === s.id);
+  // تصفية الحصص التعليمية فقط (استبعاد الامتحانات والدرجات)
+  let stLessons = allStudentAtt.filter(a => 
+    !a.examId && 
+    a.status !== "حضر الامتحان" && 
+    a.status !== "اختبار إلكتروني" && 
+    a.score === undefined
+  ).sort((a,b) => b.date.localeCompare(a.date));
+
+  // تصفية سجل الامتحانات والتقييمات فقط
+  let stExams = allStudentAtt.filter(a => 
+    a.examId || 
+    a.status === "حضر الامتحان" || 
+    a.status === "اختبار إلكتروني" || 
+    a.score !== undefined
+  ).sort((a,b) => b.date.localeCompare(a.date));
+
+  // 2️⃣ حساب الإحصائيات الدقيقة للحصص والالتزام
+  let totalLessons = stLessons.length;
+  let presentCount = stLessons.filter(a => a.status && (a.status.includes("حاضر") || a.status.includes("أول حصة"))).length;
+  let lateCount = stLessons.filter(a => a.status && a.status.includes("متأخر")).length;
+  let hwDoneCount = stLessons.filter(a => a.homework && a.homework.includes("تم")).length;
+
+  // 3️⃣ حساب الماليّات ورصيد الكرت الذهبي
+  let stRewards = (data.rewards || []).filter(r => r.studentId === s.id);
   let totalGoldenPoints = stRewards.reduce((acc, r) => acc + Number(r.points || 0), 0);
+  let stPayments = data.payments.filter(p => p.studentId === s.id).sort((a,b) => b.date.localeCompare(a.date));
 
   let teacherName = localStorage.getItem("teacherName") || user?.displayName || "Mr. Abdelhamed Ahmed";
   let teacherPhoto = user?.photoURL || localStorage.getItem("teacherPhoto") || DEFAULT_AVATAR;
   let signUrl = localStorage.getItem("teacherSign");
 
-  let cyclesMap = {};
-  stAttendance.forEach((attItem, idx) => {
-    let revIdx = totalAtt - 1 - idx;
-    let cycleNum = Math.floor(revIdx / 4) + 1;
-    if(!cyclesMap[cycleNum]) cyclesMap[cycleNum] = [];
-    cyclesMap[cycleNum].push(attItem);
-  });
-
-  $(containerId).innerHTML=`
-  <div id="captureReport" class="receipt" style="width:100%;max-width:820px;margin:auto;background:#fff;padding:20px;border:3px solid #111827;border-radius:16px">
-    <div class="receipt-head">
+  $(containerId).innerHTML = `
+  <div id="captureReport" class="receipt" style="width:100%;max-width:850px;margin:auto;background:#fff;padding:24px;border:3px solid #111827;border-radius:18px;direction:rtl;text-align:right;box-shadow:0 10px 25px rgba(0,0,0,0.05)">
+    
+    <!-- رأس التقرير الرسمية -->
+    <div class="receipt-head" style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #111827;padding-bottom:12px">
       <div>
-        <h2 style="margin:0;color:#111827">Mr. Abdelhamed Ahmed System - تقرير الطالب الشامل (Profile)</h2>
-        <p class="muted" style="margin:4px 0 0">Mr. Abdelhamed Ahmed System — ${nowDate()}</p>
-        <span style="display:inline-block;margin-top:4px;padding:2px 8px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:6px;font-size:11px;font-weight:bold">✔️ تقرير أكاديمي ومالي وملاحظات موثقة رقمياً</span>
+        <h2 style="margin:0;color:#111827;font-size:20px">Mr. Abdelhamed Ahmed System</h2>
+        <p class="muted" style="margin:4px 0 0;font-weight:bold;color:#64748b">التقرير الأكاديمي والمالي الشامل الموجه لولي الأمر</p>
+        <span style="display:inline-block;margin-top:6px;padding:3px 10px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;font-size:11px;font-weight:bold">✔️ تقرير معتمد وموثق رقمياً (${nowDate()})</span>
       </div>
-      <img src="${teacherPhoto}" style="width:65px;height:65px;border-radius:50%;object-fit:cover;border:3px solid #f59e0b" onerror="this.onerror=null;this.src=DEFAULT_AVATAR">
+      <img src="${teacherPhoto}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:3px solid #f59e0b" onerror="this.onerror=null;this.src=DEFAULT_AVATAR">
     </div>
 
-    <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;background:#f8fafc;padding:12px;border-radius:12px;border:1px solid #e2e8f0">
+    <!-- 👤 بيانات الطالب الأساسية -->
+    <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;background:#f8fafc;padding:14px;border-radius:12px;border:1px solid #e2e8f0;font-size:13px">
       <div><b>اسم الطالب بالكامل:</b> ${esc(s.name)}</div>
-      <div><b>رقم الكود (ID):</b> ${esc(s.studentNo)}</div>
-      <div><b>المرحلة والالصف:</b> ${esc(s.stage)} — ${esc(s.grade)}</div>
+      <div><b>رقم الكود (ID):</b> #${esc(s.studentNo)}</div>
+      <div><b>المرحلة والصف:</b> ${esc(s.stage)} — ${esc(s.grade)}</div>
       <div><b>المنطقة السكنية:</b> ${esc(s.location || "غير محدد")}</div>
-      <div><b>المستوى التعليمي الحالي:</b> <span class="tag" style="background:#dbeafe;color:#1e40af">المستوى #${cInfo.currentCycle} (${cInfo.currentCycleAttended}/4 حصص)</span></div>
-      <div><b>الموقف المالي للمستوى:</b> <b style="color:${cInfo.debt>0?'#be123c':'#047857'}">${cInfo.debt > 0 ? 'مستحق: ' + cInfo.debt + ' ج.م' : 'خالي المديونية ✅'}</b></div>
-      <div style="grid-column:1/-1"><b>رصيد الكرت الذهبي الموزون:</b> <span class="golden-card">🏆 ${totalGoldenPoints} نقطة تفوق</span></div>
     </div>
 
-    <h3 style="margin-top:20px;border-bottom:2px solid #111827;padding-bottom:4px;color:#1e293b">📝 سجل ملاحظات المعلم وحضور الحصص:</h3>
+    <!-- 📊 كروت الملخص المحدثة (إظهار الحصص الفعلية بدقة) -->
+    <h3 style="margin-top:20px;margin-bottom:10px;color:#1e293b;font-size:15px">📊 ملخص الحضور والالتزام بالحصلات:</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;text-align:center;font-size:12px">
+      <div style="background:#ecfdf5;padding:12px;border-radius:10px;border:1px solid #a7f3d0">
+        <div style="color:#047857;font-weight:bold">إجمالي الحصص المسجلة</div>
+        <b style="font-size:18px;color:#047857">${totalLessons} حصص</b>
+      </div>
+      <div style="background:#f0fdf4;padding:12px;border-radius:10px;border:1px solid #bbf7d0">
+        <div style="color:#15803d;font-weight:bold">حضور منتظم</div>
+        <b style="font-size:18px;color:#15803d">${presentCount}</b>
+      </div>
+      <div style="background:#fff1f2;padding:12px;border-radius:10px;border:1px solid #fecaca">
+        <div style="color:#991b1b;font-weight:bold">التزام الواجب</div>
+        <b style="font-size:18px;color:#991b1b">${hwDoneCount} / ${totalLessons}</b>
+      </div>
+      <div style="background:#fffbeb;padding:12px;border-radius:10px;border:1px solid #fde68a">
+        <div style="color:#b45309;font-weight:bold">مرات التأخير</div>
+        <b style="font-size:18px;color:#b45309">${lateCount}</b>
+      </div>
+      <div style="background:#eff6ff;padding:12px;border-radius:10px;border:1px solid #bfdbfe">
+        <div style="color:#1e40af;font-weight:bold">عدد الامتحانات</div>
+        <b style="font-size:18px;color:#1e40af">${stExams.length}</b>
+      </div>
+    </div>
+
+    <!-- 💰 تفاصيل النظام المالي وموقف الاشتراك لكل مجموعة / نظام بالحصة -->
+    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">💰 تفاصيل الاشتراك والموقف المالي لكل مجموعة:</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-top:10px">
+      ${(cInfo.groupsBreakdown || []).map(g => {
+        let isPerSession = g.payType === "بالحصة";
+        let statusBadge = isPerSession 
+          ? `<span class="tag" style="background:#e0f2fe;color:#0369a1">حساب بالحصة (${g.price} ج.م/حصة)</span>`
+          : `<span class="tag" style="background:#dbeafe;color:#1e40af">المستوى #${g.cycle} (${g.cycleAttended}/4 حصص)</span>`;
+
+        return `
+          <div style="background:#f8fafc;padding:12px;border-radius:12px;border:1px solid #cbd5e1;font-size:12px">
+            <b style="color:#0f172a;font-size:13px;display:block;margin-bottom:6px">👥 ${esc(g.groupName)}</b>
+            <div style="margin-bottom:4px"><b>نظام الاشتراك:</b> ${statusBadge}</div>
+            <div style="margin-bottom:4px"><b>الحصص المحضورة:</b> <b>${g.attended} حصص</b></div>
+            <div style="margin-bottom:4px"><b>إجمالي المسدد:</b> <b style="color:#047857">${g.paid} ج.م</b></div>
+            <div><b>المستحق / المديونية:</b> <b style="color:${g.debt > 0 ? '#be123c' : '#047857'}">${g.debt > 0 ? g.debt + ' ج.م' : 'خالي المديونية ✅'}</b></div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+
+    <!-- ملخص إجمالي المديونية والمدفوعات -->
+    <div style="background:#f1f5f9;padding:12px;border-radius:12px;border:1px solid #cbd5e1;margin-top:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px">
+      <div><b>إجمالي المبالغ المسددة الكلي:</b> <b style="color:#047857;font-size:15px">${cInfo.totalPaid} ج.م</b></div>
+      <div><b>إجمالي المديونية المستحقة المتبقية:</b> <b style="color:${cInfo.debt > 0 ? '#be123c' : '#047857'};font-size:15px">${cInfo.debt > 0 ? cInfo.debt + ' ج.م' : 'مسدد بالكامل ✅'}</b></div>
+    </div>
+
+    ${stPayments.length > 0 ? `
+      <div style="margin-top:12px">
+        <b style="font-size:12px;color:#475569">سجل الإيصالات والتحصيلات المالية الأخيرة:</b>
+        <div class="table-wrap" style="margin-top:4px">
+          <table>
+            <tr style="background:#f8fafc"><th>التاريخ والمرجع</th><th>الوسيلة</th><th>المبلغ المحصل</th></tr>
+            ${stPayments.map(p => `
+              <tr>
+                <td>${p.date} (${esc(p.authRef || 'TRX')})</td>
+                <td>${esc(p.method || 'كاش 💵')}</td>
+                <td><b style="color:#047857">${p.amount} ج.م</b></td>
+              </tr>
+            `).join("")}
+          </table>
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- 📚 سجل حضور الحصص والواجبات المنزلية والملاحظات -->
+    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">📚 سجل حضور الحصص والواجبات المنزلية:</h3>
     <div class="table-wrap" style="margin-top:8px">
       <table>
-        <tr style="background:#f1f5f9"><th>تاريخ الحصة</th><th>حالة الحضور</th><th>الواجب</th><th>النقاط المكتسبة</th><th>ملاحظة المعلم الموثقة بالحصة</th></tr>
-        ${stAttendance.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#718096">لا توجد سجلات حصص مسجلة لهذا الطالب حتى الآن</td></tr>` :
-          stAttendance.map(att => {
-            let noteClass = att.noteType === 'إيجابي' ? 'note-badge-positive' : (att.noteType === 'سلبي' ? 'note-badge-negative' : 'note-badge-neutral');
-            let icon = att.noteType === 'إيجابي' ? '🌟 ' : (att.noteType === 'سلبي' ? '⚠️ ' : '💬 ');
-            return `
-            <tr>
-              <td><b>${esc(att.date)}</b></td>
-              <td><span class="tag ${att.status?.includes('غائب')?'danger':'success'}">${esc(att.status)}</span></td>
-              <td>${esc(att.homework || '—')}</td>
-              <td><b>+${att.pointsGained || 0}</b></td>
-              <td>
-                <span class="${noteClass}">
-                  ${icon} ${esc(att.notes || 'لا توجد ملاحظات منفردة')}
-                </span>
-              </td>
-            </tr>
-          `}).join("")}
+        <thead>
+          <tr style="background:#f1f5f9">
+            <th>تاريخ الحصة</th>
+            <th>حالة الحضور</th>
+            <th>تسليم الواجب</th>
+            <th>النقاط</th>
+            <th>ملاحظة المعلم الموثقة بالحصة</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${stLessons.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#718096">لا توجد حصص تعليمية مسجلة حتى الآن</td></tr>` :
+            stLessons.map(att => {
+              let noteClass = att.noteType === 'إيجابي' ? 'note-badge-positive' : (att.noteType === 'سلبي' ? 'note-badge-negative' : 'note-badge-neutral');
+              let icon = att.noteType === 'إيجابي' ? '🌟 ' : (att.noteType === 'سلبي' ? '⚠️ ' : '💬 ');
+              return `
+              <tr>
+                <td><b>${esc(att.date)}</b></td>
+                <td><span class="tag ${att.status?.includes('غائب')?'danger':(att.status?.includes('متأخر')?'warning':'success')}">${esc(att.status)}</span></td>
+                <td>${esc(att.homework || '—')}</td>
+                <td><b style="color:#d97706">+${att.pointsGained || 0}</b></td>
+                <td><span class="${noteClass}">${icon} ${esc(att.notes || 'لا توجد ملاحظة')}</span></td>
+              </tr>
+            `}).join("")}
+        </tbody>
       </table>
     </div>
 
-    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:4px;color:#1e293b">🏛️ أرشيف المستويات التعليمية السابقة (Archive History):</h3>
-    ${Object.keys(cyclesMap).length === 0 ? `<p class="muted">لا يوجد أرشيف مستويات سابق حتى الآن.</p>` :
-      Object.keys(cyclesMap).reverse().map(cNum => `
-        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:12px;padding:12px;margin-top:10px">
-          <h4 style="margin:0 0 8px;color:#1d4ed8">📦 أرشيف المستوى التعليمي #${cNum}</h4>
-          <div class="table-wrap" style="background:#fff">
-            <table>
-              <tr><th>التاريخ</th><th>الحضور</th><th>الواجب</th><th>ملاحظة الحصة</th></tr>
-              ${cyclesMap[cNum].map(att => `
-                <tr>
-                  <td>${att.date}</td>
-                  <td>${att.status}</td>
-                  <td>${att.homework||'—'}</td>
-                  <td>${att.notes||'—'}</td>
-                </tr>
-              `).join("")}
-            </table>
-          </div>
-        </div>
-      `).join("")
-    }
-
-    <h4 style="margin-top:18px;border-bottom:2px solid #111827;padding-bottom:4px">📊 ملخص الحضور العام والالتزام:</h4>
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
-      <div style="background:#ecfdf5;padding:10px;border-radius:10px;border:1px solid #a7f3d0">إجمالي الحصص المسجلة: <b>${totalAtt}</b></div>
-      <div style="background:#f0fdf4;padding:10px;border-radius:10px;border:1px solid #bbf7d0">حضور منتظم: <b style="color:#047857">${presentCount}</b></div>
-      <div style="background:#fffbeb;padding:10px;border-radius:10px;border:1px solid #fde68a">مرات التأخير: <b style="color:#b45309">${lateCount}</b></div>
-      <div style="background:#fef2f2;padding:10px;border-radius:10px;border:1px solid #fecaca">التزام الواجب: <b style="color:#1e293b">${hwDoneCount} / ${totalAtt}</b></div>
+    <!-- 🏆 سجل درجات الامتحانات والتقييمات تفصيلاً -->
+    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">🏆 سجل درجات الامتحانات والتقييمات تفصيلاً (${stExams.length} اختبار):</h3>
+    <div class="table-wrap" style="margin-top:8px">
+      <table>
+        <thead>
+          <tr style="background:#fff7ed">
+            <th>تاريخ الامتحان</th>
+            <th>عنوان الاختبار</th>
+            <th>درجة الطالب</th>
+            <th>التقييم</th>
+            <th>ملاحظات المصحح</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${stExams.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#718096">لا توجد امتحانات أو درجات مسجلة لهذا الطالب حتى الآن</td></tr>` :
+            stExams.map(ex => {
+              let score = Number(ex.score || 0);
+              let badgeColor = score >= 85 ? '#059669' : (score >= 65 ? '#d97706' : '#dc2626');
+              let ratingText = score >= 85 ? 'ممتاز 🌟' : (score >= 65 ? 'جيد جداً 👍' : (score >= 50 ? 'مقبول ⚠️' : 'ضعيف ❌'));
+              return `
+              <tr>
+                <td><b>${esc(ex.date)}</b></td>
+                <td><b>${esc(ex.examTitle || (ex.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي"))}</b></td>
+                <td><b style="font-size:16px;color:${badgeColor}">${score} / 100</b></td>
+                <td><span class="tag" style="background:#f0fdf4;color:${badgeColor};border:1px solid ${badgeColor}">${ratingText}</span></td>
+                <td>${esc(ex.notes || 'تم التصحيح والتدقيق')}</td>
+              </tr>
+            `}).join("")}
+        </tbody>
+      </table>
     </div>
 
-    <div class="sign-area" style="margin-top:28px">
+    <!-- 🌟 تفاصيل نظام الكرت الذهبي والنقاط -->
+    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">🏆 رصيد ونقاط الكرت الذهبي (Golden Card):</h3>
+    <div style="background:#fffbeb;padding:14px;border-radius:12px;border:1px solid #fde68a;margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div>
-        <div>التاريخ الرسمي للتقرير: ${nowDate()}</div>
-        <div class="muted" style="font-size:10px">توقيع رقمي موثق: SEC-REP-${s.studentNo}-${Date.now().toString().slice(-4)}</div>
+        <div style="font-size:12px;color:#b45309;font-weight:bold">إجمالي نقاط التفوق المكتسبة حتى الآن:</div>
+        <div style="font-size:11px;color:#78350f">تُحسب تلقائياً بناءً على الحضور المنتظم، درجات الامتحانات، والتزام الواجبات.</div>
+      </div>
+      <span class="golden-card" style="font-size:18px">🌟 ${totalGoldenPoints} نقطة تفوق</span>
+    </div>
+
+    <!-- اعتماد وتوقيع التقرير -->
+    <div class="sign-area" style="margin-top:28px;display:flex;justify-content:space-between;align-items:flex-end">
+      <div>
+        <div style="font-size:12px">تاريخ إصدار التقرير: ${nowDate()}</div>
+        <div class="muted" style="font-size:10px">رمز التوثيق: SEC-REP-${s.studentNo}-${Date.now().toString().slice(-4)}</div>
       </div>
       <div style="text-align:center">
-        <div>اعتماد المعلم المباشر</div>
+        <div style="font-size:13px">اعتماد المعلم المباشر</div>
         ${signUrl ? `<img src="${signUrl}" style="height:40px;object-fit:contain" onerror="this.style.display='none'"><br>` : ""}
         <div style="font-family:'Dancing Script', cursive, sans-serif;font-size:22px;color:#dc2626;font-weight:bold;margin:2px 0">Mr.Abdelhamed.A</div>
         <div><b>${esc(teacherName)}</b></div>
@@ -3068,7 +3321,7 @@ function renderStudentProfileView(containerId, stId){
     </div>
   </div>
 
-  <div class="actions" style="margin-top:16px;justify-content:center">
+  <div class="actions" style="margin-top:16px;justify-content:center;display:flex;gap:10px">
     <button class="primary" onclick="downloadReportImage()">⬇️ تنزيل التقرير الشامل كصورة</button>
     <a href="https://wa.me/${s.phone}?text=${encodeURIComponent('أهلاً ولي أمر الطالب ' + s.name + '، إليك تقرير المتابعة الأكاديمية والمالية الشامل والملاحظات المؤرخة المعتمدة من Mr. Abdelhamed Ahmed System.')}" target="_blank" class="primary success" style="text-decoration:none">📱 إرسال التقرير الشامل لولي الأمر عبر WhatsApp</a>
   </div>`;
@@ -3787,20 +4040,84 @@ function paymentModal(){
 
 function paymentModalForStudent(selectedStudentId=""){
   playBeep(true);
-  $("modalTitle").textContent="تحصيل دفعة مالية وتحديد وسيلة الدفع";
-  $("modalBody").innerHTML=`<form class="form" onsubmit="savePay(event)">
-    <select id="p_st" required class="full">
-      ${data.students.map(s=>`<option value="${s.id}" ${s.id===selectedStudentId?'selected':''}>${s.name} (${s.grade})</option>`).join("")}
+  
+  $("modalTitle").textContent = "تحصيل دفعة مالية وتحديد المجموعة ووسيلة الدفع";
+  $("modalBody").innerHTML = `<form class="form" onsubmit="savePay(event)">
+    <label style="font-size:12px;color:#64748b;margin-bottom:2px;display:block">1. اختر الطالب:</label>
+    <select id="p_st" required class="full" onchange="onPaymentStudentChange(this.value)">
+      <option value="">-- اختر الطالب --</option>
+      ${data.students.map(s => `<option value="${s.id}" ${s.id === selectedStudentId ? 'selected' : ''}>${s.name} (${s.grade})</option>`).join("")}
     </select>
-    <input id="p_am" type="number" placeholder="المبلغ المحصل (ج.م)" required class="full">
+
+    <!-- حاوية عرض المجموعات والمستحقات المباشرة للطالب المختارة ديناميكياً -->
+    <div id="p_group_selection_box" class="full">
+      ${renderPaymentGroupOptionsHtml(selectedStudentId)}
+    </div>
+
+    <label style="font-size:12px;color:#64748b;margin-bottom:2px;display:block">2. المبلغ المحصل (ج.م):</label>
+    <input id="p_am" type="number" placeholder="المبلغ المحصل (ج.م)" required class="full" min="1">
+
+    <label style="font-size:12px;color:#64748b;margin-bottom:2px;display:block">3. وسيلة الدفع:</label>
     <select id="p_method" class="full">
       <option value="كاش 💵">كاش 💵</option>
       <option value="فودافون كاش / تحويل 📱">فودافون كاش / تحويل 📱</option>
       <option value="بطاقة / فيزا 💳">بطاقة / فيزا 💳</option>
     </select>
+
     <button class="primary full" style="margin-top:10px">حفظ التحصيل وتوليد الإيصال الموثق</button>
   </form>`;
+
   openModal();
+}
+
+// دالة تحديث خيارات المجموعات عند تغيير اسم الطالب داخل القائمة
+function onPaymentStudentChange(stId) {
+  let box = $("p_group_selection_box");
+  if (box) {
+    box.innerHTML = renderPaymentGroupOptionsHtml(stId);
+  }
+}
+
+// دالة توليد خيارات السداد بحسب مجموعات الطالب ونظام حسابه (بالشهر / بالحصة)
+function renderPaymentGroupOptionsHtml(stId) {
+  if (!stId) {
+    return `<div class="muted" style="font-size:12px;padding:6px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">اختر طالباً لعرض تفاصيل مجموعاته والمستحق عليه.</div>`;
+  }
+
+  let st = data.students.find(s => s.id === stId);
+  if (!st) return "";
+
+  let cInfo = getStudentCycleInfo(st.id);
+
+  // إذا كان الطالب فردياً أو ليس لديه سوى مجموعة واحدة
+  if (cInfo.groupsBreakdown.length <= 1 && (!st.groupsSetup || st.groupsSetup.length === 0)) {
+    let singleInfo = cInfo.groupsBreakdown[0] || {};
+    let isPerSession = st.payType === "بالحصة";
+    
+    return `
+      <input type="hidden" id="p_group_id" value="all">
+      <div style="background:#f0fdf4;padding:10px;border-radius:10px;border:1px solid #bbf7d0;margin-bottom:10px;font-size:12px">
+        <b style="color:#166534;display:block;margin-bottom:2px">📊 الموقف المالي الحسابي للطالب:</b>
+        • نظام الاشتراك: <b>${isPerSession ? 'بالحصة (' + (st.price || 0) + ' ج.م)' : 'بالشهر (باقة 4 حصص)'}</b><br>
+        • المستحق المتبقي للتسديد: <b style="color:${cInfo.debt > 0 ? '#be123c' : '#047857'}">${cInfo.debt > 0 ? cInfo.debt + ' ج.م' : 'خالي المديونية ✅'}</b>
+      </div>
+    `;
+  }
+
+  // إذا كان الطالب مسجلاً في أكثر من مجموعة
+  return `
+    <div style="background:#f8fafc;padding:12px;border-radius:10px;border:1px solid #cbd5e1;margin-bottom:10px;font-size:12px">
+      <label style="font-weight:bold;color:#1e293b;display:block;margin-bottom:6px">🎯 حدد المجموعة المراد السداد لها:</label>
+      <select id="p_group_id" style="width:100%;padding:8px;border-radius:8px;border:1px solid #cbd5e1">
+        <option value="all">🌐 سداد مجمع لجميع المجموعات (المستحق الكلي: ${cInfo.debt} ج.م)</option>
+        ${cInfo.groupsBreakdown.map(g => `
+          <option value="${g.groupId}">
+            مجموعة: ${g.groupName} (${g.payType === 'بالشهر' ? 'المستوى #' + g.cycle : 'بالحصة'}) — المستحق: ${g.debt} ج.م
+          </option>
+        `).join("")}
+      </select>
+    </div>
+  `;
 }
 
 async function savePay(e){
