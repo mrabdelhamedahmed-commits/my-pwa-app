@@ -258,6 +258,10 @@ table{width:100%;border-collapse:collapse}th,td{padding:9px 10px;border-bottom:1
 </div>
 
 <div id="toast"></div>
+<!-- واجهة ولي الأمر المستقلة -->
+<div id="parentPortalScreen" class="hidden" style="min-height:100vh; padding:20px; background:#f4f7fb;">
+  <div id="parentPortalContent" style="max-width:850px; margin:0 auto;"></div>
+</div>
 
 <!-- تسجيل Service Worker للعمل الأوفلاين الشامل -->
 <script>
@@ -347,6 +351,15 @@ const weekDays=[{key:0,name:"الأحد"},{key:1,name:"الإثنين"},{key:2,n
 const $=id=>document.getElementById(id), esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m])), toast=x=>{ $("toast").textContent=x;$("toast").style.display="block";setTimeout(()=>$("toast").style.display="none",3000)}, col=n=>db.collection(n);
 
 function nowDate(d=new Date()){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+function now24Time(d=new Date()){return d.toLocaleTimeString('en-GB',{hour12:false})}
+
+function formatSeconds(sec) {
+  if (!sec) return "00:00:00";
+  let h = String(Math.floor(sec / 3600)).padStart(2, '0');
+  let m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+  let s = String(sec % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
 function now24Time(d=new Date()){return d.toLocaleTimeString('en-GB',{hour12:false})}
 
 function analyzeNoteSentiment(noteText) {
@@ -4741,7 +4754,58 @@ setInterval(()=>{
   checkScheduleForNotifications();
 },1000);
 
+// فحص ما إذا كان الزائر ولي أمر دخل عبر رابط مباشر
+async function checkParentPortalView() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const studentId = urlParams.get('portalStudentId');
+
+  if (studentId) {
+    if ($("loginScreen")) $("loginScreen").classList.add("hidden");
+    if ($("app")) $("app").classList.add("hidden");
+    if ($("lockScreen")) $("lockScreen").style.display = "none";
+
+    const portalScreen = $("parentPortalScreen");
+    if (portalScreen) portalScreen.classList.remove("hidden");
+
+    $("parentPortalContent").innerHTML = `<div style="text-align:center; padding:40px; font-weight:bold;">⏳ جاري تحميل تقرير الطالب...</div>`;
+
+    try {
+      const studentDoc = await db.collection("students").doc(studentId).get();
+      if (!studentDoc.exists) {
+        $("parentPortalContent").innerHTML = `<div style="text-align:center; padding:40px; color:red; font-weight:bold;">⚠️ عذراً، الرابط غير صحيح أو تم حذف بيانات الطالب.</div>`;
+        return true;
+      }
+
+      const stData = { id: studentDoc.id, ...studentDoc.data() };
+
+      const [groupsSnap, attSnap, paysSnap, rewardsSnap] = await Promise.all([
+        db.collection("groups").get(),
+        db.collection("attendance").where("studentId", "==", studentId).get(),
+        db.collection("payments").where("studentId", "==", studentId).get(),
+        db.collection("rewards").where("studentId", "==", studentId).get()
+      ]);
+
+      data.students = [stData];
+      data.groups = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.attendance = attSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.payments = paysSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.rewards = rewardsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      renderStudentProfileView("parentPortalContent", studentId);
+
+      const actionsDivs = document.querySelectorAll("#parentPortalContent .actions");
+      actionsDivs.forEach(div => div.style.display = "none");
+
+    } catch (err) {
+      $("parentPortalContent").innerHTML = `<div style="text-align:center; padding:40px; color:red;">⚠️ تعذر تحميل البيانات. يرجى التأكد من الاتصال بالإنترنت.</div>`;
+    }
+    return true;
+  }
+  return false;
+}
 auth.onAuthStateChanged(async u=>{
+  const isParent = await checkParentPortalView();
+  if (isParent) return;
   if(!u){
     user=null;
     $("loginScreen").classList.remove("hidden");
