@@ -2207,7 +2207,9 @@ function liveLessonsPage(c){
                 </div>
               ` : `
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                  <span class="timer" style="font-size:16px" id="timer_display_${idx}">00:00:00</span>
+                  <span class="timer" style="font-size:16px" id="timer_display_${idx}">
+  ${activeSess ? formatSeconds(activeSess.seconds) : "00:00:00"}
+</span>
                   <button class="small danger" onclick="finishIndependentSession('${sessionKey}', '${esc(l.studentName)}')">⏹️ إنهاء وتوثيق</button>
                 </div>
               `)}
@@ -2255,12 +2257,19 @@ function startIndependentSession(sessionKey, originalTime, sessionName){
 function confirmStartIndependentSession(sessionKey, originalTime, sessionName) {
   closeModal();
   let startTime = new Date();
+  
   activeLiveSessions[sessionKey] = {
     startTime: startTime,
     seconds: 0,
     timerInterval: setInterval(() => {
-      if(activeLiveSessions[sessionKey]){
+      if (activeLiveSessions[sessionKey]) {
         activeLiveSessions[sessionKey].seconds++;
+        
+        // البحث عن عنصر عرض المؤقت وتحديث النص بالوقت الجديد
+        let timerDisplay = document.querySelector(`[id^="timer_display_"]`);
+        if (timerDisplay) {
+          timerDisplay.textContent = formatSeconds(activeLiveSessions[sessionKey].seconds);
+        }
       }
     }, 1000)
   };
@@ -3246,21 +3255,22 @@ function renderStudentProfileView(containerId, stId){
       </div>
     ` : ''}
 
-    <!-- 📚 سجل حضور الحصص والواجبات المنزلية والملاحظات -->
-    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">📚 سجل حضور الحصص والواجبات المنزلية:</h3>
+    <!-- 📚 سجل حضور الحصص والواجبات المنزلية والملاحظات (محدث بالواجب الجديد والحالي) -->
+    <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">📚 سجل الحصص والواجبات المنزلية التفصيلي:</h3>
     <div class="table-wrap" style="margin-top:8px">
       <table>
         <thead>
           <tr style="background:#f1f5f9">
             <th>تاريخ الحصة</th>
             <th>حالة الحضور</th>
-            <th>تسليم الواجب</th>
+            <th>واجب الحصة (موقف التسليم)</th>
+            <th>الواجب الجديد المكلف به (للحصة القادمة)</th>
             <th>النقاط</th>
             <th>ملاحظة المعلم الموثقة بالحصة</th>
           </tr>
         </thead>
         <tbody>
-          ${stLessons.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#718096">لا توجد حصص تعليمية مسجلة حتى الآن</td></tr>` :
+          ${stLessons.length === 0 ? `<tr><td colspan="6" style="text-align:center;color:#718096">لا توجد حصص تعليمية مسجلة حتى الآن</td></tr>` :
             stLessons.map(att => {
               let noteClass = att.noteType === 'إيجابي' ? 'note-badge-positive' : (att.noteType === 'سلبي' ? 'note-badge-negative' : 'note-badge-neutral');
               let icon = att.noteType === 'إيجابي' ? '🌟 ' : (att.noteType === 'سلبي' ? '⚠️ ' : '💬 ');
@@ -3268,7 +3278,8 @@ function renderStudentProfileView(containerId, stId){
               <tr>
                 <td><b>${esc(att.date)}</b></td>
                 <td><span class="tag ${att.status?.includes('غائب')?'danger':(att.status?.includes('متأخر')?'warning':'success')}">${esc(att.status)}</span></td>
-                <td>${esc(att.homework || '—')}</td>
+                <td><b>${esc(att.homework || '—')}</b></td>
+                <td><b style="color:#b45309">${esc(att.nextHomework || 'لا يوجد واجب جديد محدد')}</b></td>
                 <td><b style="color:#d97706">+${att.pointsGained || 0}</b></td>
                 <td><span class="${noteClass}">${icon} ${esc(att.notes || 'لا توجد ملاحظة')}</span></td>
               </tr>
@@ -4873,13 +4884,29 @@ window.expensesPage = function(c) {
   let monthExpenses = data.expenses.filter(x => x.date && x.date.startsWith(currentMonthStr));
   let monthPayments = (data.payments || []).filter(x => x.date && x.date.startsWith(currentMonthStr));
 
-  // تجميع الأيام النشطة خلال الشهر
-  let activeDates = Array.from(new Set([
-    ...monthExpenses.map(e => e.date),
-    ...monthPayments.map(p => p.date)
-  ])).sort((a, b) => b.localeCompare(a));
+  // 🔄 4️⃣ التجميع الذكي للأيام الفريدة (قطع الوقت YYYY-MM-DD لضمان كارت واحد لكل يوم)
+  let dailyMap = {};
 
-  // 4️⃣ بناء واجهة الصفحة المطرّزة بنفس تصميم الصور
+  // أ) تجميع التحصيلات اليومية
+  monthPayments.forEach(p => {
+    let d = p.date ? p.date.split(" ")[0] : "";
+    if (!d) return;
+    if (!dailyMap[d]) dailyMap[d] = { collected: 0, spent: 0 };
+    dailyMap[d].collected += Number(p.amount || 0);
+  });
+
+  // ب) تجميع المصروفات اليومية
+  monthExpenses.forEach(e => {
+    let d = e.date ? e.date.split(" ")[0] : "";
+    if (!d) return;
+    if (!dailyMap[d]) dailyMap[d] = { collected: 0, spent: 0 };
+    dailyMap[d].spent += Number(e.amount || 0);
+  });
+
+  // ج) ترتيب التواريخ الفريدة من الأحدث للأقدم
+  let sortedDates = Object.keys(dailyMap).sort((a, b) => b.localeCompare(a));
+
+  // 5️⃣ بناء واجهة الصفحة
   c.innerHTML = `
   <section class="section" style="direction:rtl; text-align:right; font-family:sans-serif;">
     
@@ -4889,14 +4916,14 @@ window.expensesPage = function(c) {
         💸 الإدارة المالية المتقدمة وصافي السيولة الفعلية (Smart CashFlow & Budgeting)
       </h3>
       
-      <!-- اختيار الشهر (شهر بشهر) -->
+      <!-- اختيار الشهر -->
       <div style="display:flex; align-items:center; gap:8px">
         <label style="font-weight:bold; font-size:13px; color:#475569">عرض تقويم شهر:</label>
         <input type="month" value="${currentMonthStr}" onchange="window.selectedExpensesMonth=this.value; expensesPage(document.getElementById('content')||c)" style="padding:6px 10px; border-radius:8px; border:1px solid #cbd5e1; font-weight:bold; font-size:13px">
       </div>
     </div>
 
-    <!-- البطاقة الداكنة الرئيسية (إجمالي المبلغ المتوفر) -->
+    <!-- البطاقة الداكنة الرئيسية -->
     <div style="background:#0f172a; color:#fff; padding:22px 24px; border-radius:18px; margin-bottom:16px; box-shadow:0 10px 25px rgba(15,23,42,0.15)">
       <div style="font-size:13px; color:#94a3b8; text-align:center; font-weight:bold; margin-bottom:6px">
         💵 إجمالي المبلغ الفعلي المتوفر معك في الخزينة الآن (السيولة الصافية بعد المصروفات):
@@ -4909,27 +4936,22 @@ window.expensesPage = function(c) {
       </div>
     </div>
 
-    <!-- كروت الإحصائيات الـ 3 (نفس ألوان الصورة) -->
+    <!-- كروت الإحصائيات الـ 3 -->
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:12px; margin-bottom:20px">
-      
-      <!-- كارت نقطة التعادل -->
       <div style="background:#fffbeb; border:1px solid #fef08a; padding:16px; border-radius:14px; text-align:center">
-        <div style="font-size:12px; color:#b45309; font-weight:bold">⚖️ نقطة التعادل للمجموعات (Break-even):</div>
+        <div style="font-size:12px; color:#b45309; font-weight:bold">⚖️ نقطة التعادل للمجموعات:</div>
         <div style="font-size:24px; font-weight:900; color:#d97706; margin-top:6px">${breakEvenStudents} طلاب</div>
       </div>
 
-      <!-- كارت تكلفة الطالب -->
       <div style="background:#f0f5ff; border:1px solid #dbeafe; padding:16px; border-radius:14px; text-align:center">
-        <div style="font-size:12px; color:#3730a3; font-weight:bold">📊 تكلفة الطالب الواحد مقارنة بالمصروفات:</div>
+        <div style="font-size:12px; color:#3730a3; font-weight:bold">📊 تكلفة الطالب الواحد:</div>
         <div style="font-size:24px; font-weight:900; color:#4f46e5; margin-top:6px">${costPerStudent} ج.م/طالب</div>
       </div>
 
-      <!-- كارت السيولة المتوقعة -->
       <div style="background:#f0fdf4; border:1px solid #bbf7d0; padding:16px; border-radius:14px; text-align:center">
-        <div style="font-size:12px; color:#15803d; font-weight:bold">📈 السيولة المتوقعة (Expected Cash Flow):</div>
+        <div style="font-size:12px; color:#15803d; font-weight:bold">📈 السيولة المتوقعة:</div>
         <div style="font-size:24px; font-weight:900; color:#059669; margin-top:6px">${expectedCashFlow} ج.م</div>
       </div>
-
     </div>
 
     <!-- أزرار العمليات السريعة -->
@@ -4947,24 +4969,24 @@ window.expensesPage = function(c) {
       </button>
     </div>
 
-    <!-- 📅 قسم تقفيل الأيام (بطاقات الأيام حسب التقويم) -->
+    <!-- 📅 قسم تقفيل الأيام الفريدة -->
     <h4 style="margin:20px 0 10px; font-size:15px; color:#1e293b; font-weight:bold">
       📅 بطاقات الإغلاق اليومي لشهر (${currentMonthStr}):
     </h4>
     
-    ${activeDates.length === 0 ? `
+    ${sortedDates.length === 0 ? `
       <div style="background:#f8fafc; border:1px dashed #cbd5e1; padding:15px; text-align:center; border-radius:12px; color:#64748b; margin-bottom:20px; font-size:13px">
         لا توجد أي حركات مالية مسجلة في هذا الشهر حتى الآن.
       </div>
     ` : `
       <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:12px; margin-bottom:24px">
-        ${activeDates.map(dStr => {
-          let dayInc = monthPayments.filter(p => p.date === dStr).reduce((a, x) => a + Number(x.amount || 0), 0);
-          let dayExp = monthExpenses.filter(e => e.date === dStr).reduce((a, x) => a + Number(x.amount || 0), 0);
+        ${sortedDates.map(dStr => {
+          let dayInc = dailyMap[dStr].collected;
+          let dayExp = dailyMap[dStr].spent;
           let dayNet = dayInc - dayExp;
 
           return `
-            <div onclick="window.openDayDetailsModal('${dStr}')" style="background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:14px; cursor:pointer; transition:all 0.2s; box-shadow:0 2px 5px rgba(0,0,0,0.03)" onmouseover="this.style.borderColor='#0284c7'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='#e2e8f0'; this.style.transform='translateY(0)'">
+            <div onclick="if(typeof window.openDayDetailsModal==='function') window.openDayDetailsModal('${dStr}')" style="background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:14px; cursor:pointer; transition:all 0.2s; box-shadow:0 2px 5px rgba(0,0,0,0.03)" onmouseover="this.style.borderColor='#0284c7'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='#e2e8f0'; this.style.transform='translateY(0)'">
               <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:8px; margin-bottom:8px">
                 <span style="font-weight:bold; color:#0f172a; font-size:13px">📆 ${dStr}</span>
                 <span style="font-size:11px; background:#e0f2fe; color:#0369a1; padding:2px 8px; border-radius:10px; font-weight:bold">التفاصيل 🔍</span>
@@ -4987,7 +5009,7 @@ window.expensesPage = function(c) {
       </div>
     `}
 
-    <!-- 📋 جدول المصروفات التشغيلية المسجلة (مع زر التعديل والحذف) -->
+    <!-- 📋 جدول المصروفات التشغيلية -->
     <h4 style="margin:20px 0 10px; font-size:15px; color:#1e293b; font-weight:bold">المصروفات التشغيلية المسجلة:</h4>
     <div style="background:#fff; border:1px solid #e2e8f0; border-radius:14px; overflow:hidden; margin-bottom:24px">
       <table style="width:100%; border-collapse:collapse; text-align:right; font-size:13px">
@@ -5008,8 +5030,8 @@ window.expensesPage = function(c) {
               <td style="padding:12px; font-weight:bold; color:#0f172a">${safeEsc(x.category || x.title || 'مصروف')}</td>
               <td style="padding:12px; font-weight:bold; color:#0f172a">${x.amount} ج.م</td>
               <td style="padding:12px; text-align:center">
-                <button onclick="window.editExpenseModal('${x.id}')" style="background:#f1f5f9; color:#475569; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold; margin-left:4px">✏️ تعديل</button>
-                <button onclick="window.deleteExpense('${x.id}')" style="background:#fff1f2; color:#e11d48; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold">حذف</button>
+                <button onclick="if(typeof window.editExpenseModal==='function') window.editExpenseModal('${x.id}')" style="background:#f1f5f9; color:#475569; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold; margin-left:4px">✏️ تعديل</button>
+                <button onclick="if(typeof window.deleteExpense==='function') window.deleteExpense('${x.id}'); else if(typeof del==='function') del('expenses','${x.id}');" style="background:#fff1f2; color:#e11d48; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold">حذف</button>
               </td>
             </tr>
           `).join("")}
@@ -5042,7 +5064,7 @@ window.expensesPage = function(c) {
                 </button>
               </td>
               <td style="padding:12px; text-align:center">
-                <button onclick="if(typeof del==='function') del('liabilities','${l.id}'); else window.deleteLiability('${l.id}');" style="background:#fff1f2; color:#e11d48; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold">حذف</button>
+                <button onclick="if(typeof del==='function') del('liabilities','${l.id}'); else if(typeof window.deleteLiability==='function') window.deleteLiability('${l.id}');" style="background:#fff1f2; color:#e11d48; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold">حذف</button>
               </td>
             </tr>
           `).join("")}
