@@ -2278,60 +2278,99 @@ function confirmStartIndependentSession(sessionKey, originalTime, sessionName) {
   render();
 }
 
-function finishIndependentSession(sessionKey, sessionName){
+function finishIndependentSession(sessionKey, sessionName) {
   playBeep(true);
-  if(activeLiveSessions[sessionKey]){
+  
+  // 1. إيقاف المؤقت الزمني للحصة الحالية
+  if (activeLiveSessions[sessionKey]) {
     clearInterval(activeLiveSessions[sessionKey].timerInterval);
     delete activeLiveSessions[sessionKey];
   }
 
-  let targetStudents = data.students.filter(s => sessionName.includes(s.name) || (sessionName.includes("مجموعة") && s.groupsSetup && s.groupsSetup.some(gs => sessionName.includes(data.groups.find(g=>g.id===gs.groupId)?.name))));
-  if(targetStudents.length === 0) targetStudents = data.students;
+  // 2. تصفية الطلاب المستهدفين للحصة
+  let targetStudents = data.students.filter(s => 
+    sessionName.includes(s.name) || 
+    (sessionName.includes("مجموعة") && s.groupsSetup && s.groupsSetup.some(gs => sessionName.includes(data.groups.find(g => g.id === gs.groupId)?.name)))
+  );
+  if (targetStudents.length === 0) targetStudents = data.students;
+
+  // 3. جلب أحدث واجب مُسجل سابقاً لهذه الحصة إن وجد لتسهيل التعديل
+  let currentSavedHomework = data.homeworkReminders[sessionKey] || "";
 
   $("modalTitle").textContent = `📝 نهاية الحصة، التوثيق، وتسجيل الواجب: ${sessionName}`;
   $("modalBody").innerHTML = `
-    <div style="background:#fffbeb;padding:10px;border-radius:10px;border:1px solid #fde68a;margin-bottom:12px">
-      <label style="font-weight:bold;color:#b45309">📌 واجب الحصة القادمة (ليقوم النظام بتذكيرك به آلياً الحصة القادمة):</label>
-      <input id="next_homework_input" placeholder="مثال: حل صـ 45 بالجدول المرفق وتسميع النظريات..." style="width:100%;margin-top:4px;padding:8px;border:1px solid #f59e0b;border-radius:8px">
+    <!-- مدخل واجب الحصة القادمة -->
+    <div style="background:#fffbeb;padding:12px;border-radius:10px;border:1px solid #fde68a;margin-bottom:12px">
+      <label style="font-weight:bold;color:#b45309;display:block;margin-bottom:4px">📌 واجب الحصة القادمة (سيقوم النظام بتذكيرك به ورصده للطلاب):</label>
+      <input id="next_homework_input" value="${esc(currentSavedHomework)}" placeholder="مثال: حل صـ 45 بالجدول المرفق وتسميع النظريات..." style="width:100%;padding:8px;border:1px solid #f59e0b;border-radius:8px;font-size:13px">
     </div>
 
-    <div class="table-wrap"><table>
-      <tr><th>اسم الطالب</th><th>الحضور</th><th>واجب اليوم</th><th>ملاحظة الحصة</th><th>إجراء التقرير المنفصل</th></tr>
-      ${targetStudents.map(st => `
-        <tr>
-          <td><b>${esc(st.name)}</b></td>
-          <td>
-            <select id="ind_att_${st.id}" onchange="toggleFinishHwOption('${st.id}', this.value)">
-              <option value="حاضر">حاضر ✅</option>
-              <option value="متأخر">متأخر ⏱️</option>
-              <option value="غائب">غائب ❌</option>
-              <option value="أول حصة">أول حصة (تعارف/تجريبية) 🔰</option>
-            </select>
-          </td>
-          <td>
-            <div id="ind_hw_box_${st.id}">
-              <select id="ind_hw_${st.id}">
-                <option value="تم التسليم">تم التسليم ✅</option>
-                <option value="تسليم جزئي">تسليم جزئي ⚠️</option>
-                <option value="لم يسلم">لم يسلم ❌</option>
-              </select>
-            </div>
-          </td>
-          <td>
-            <input id="ind_notes_${st.id}" placeholder="ملاحظة المعلم..." style="width:100%">
-          </td>
-          <td>
-            <button class="small success" onclick="sendSeparateSessionReport('${st.id}','${esc(st.name)}','${esc(st.phone)}')">📱 إرسال تقرير منفصل</button>
-          </td>
-        </tr>
-      `).join("")}
-    </table></div>
+    <!-- أزرار الإجراءات السريعة للمجموعة -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+      <span style="font-size:12px;color:#64748b;font-weight:bold">قائمة الطلاب (${targetStudents.length} طلاب):</span>
+      <button class="small success" type="button" onclick="setAllGroupHomeworkDone()">✅ تعيين الواجب "تم التسليم" للجميع</button>
+    </div>
+
+    <!-- جدول الحضور والواجبات والملاحظات -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>اسم الطالب</th>
+            <th>الحضور</th>
+            <th>واجب اليوم</th>
+            <th>ملاحظة الحصة</th>
+            <th>إجراء التقرير المنفصل</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${targetStudents.map(st => `
+            <tr>
+              <td><b>${esc(st.name)}</b></td>
+              <td>
+                <select id="ind_att_${st.id}" onchange="toggleFinishHwOption('${st.id}', this.value)">
+                  <option value="حاضر">حاضر ✅</option>
+                  <option value="متأخر">متأخر ⏱️</option>
+                  <option value="غائب">غائب ❌</option>
+                  <option value="أول حصة">أول حصة (تعارف/تجريبية) 🔰</option>
+                </select>
+              </td>
+              <td>
+                <div id="ind_hw_box_${st.id}">
+                  <select id="ind_hw_${st.id}">
+                    <option value="تم التسليم">تم التسليم ✅</option>
+                    <option value="تسليم جزئي">تسليم جزئي ⚠️</option>
+                    <option value="لم يسلم">لم يسلم ❌</option>
+                  </select>
+                </div>
+              </td>
+              <td>
+                <input id="ind_notes_${st.id}" placeholder="ملاحظة المعلم..." style="width:100%;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px">
+              </td>
+              <td>
+                <button class="small success" onclick="sendSeparateSessionReport('${st.id}','${esc(st.name)}','${esc(st.phone)}')">📱 إرسال تقرير منفصل</button>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
     
+    <!-- زر الإغلاق والحفظ النهائي -->
     <div style="margin-top:16px;text-align:center">
       <button class="primary danger full" onclick="confirmLockAndCompleteSession('${sessionKey}', '${esc(sessionName)}')">🔒 إغلاق الحصة نهائياً اليوم وتسجيلها آلياً</button>
     </div>
   `;
+  
   openModal();
+}
+
+// دالة مساعدة لتحديد الواجب كمكتمل لجميع الطلاب بنقرة واحدة
+function setAllGroupHomeworkDone() {
+  document.querySelectorAll("[id^='ind_hw_']").forEach(select => {
+    select.value = "تم التسليم";
+  });
+  toast("✅ تم تحديد واجب جميع الطلاب كـ 'تم التسليم'");
 }
 
 function toggleFinishHwOption(stId, val) {
@@ -2383,17 +2422,21 @@ async function downloadLessonReportImage(){
   let a = document.createElement("a"); a.download = "Lesson-Report.png"; a.href = canvas.toDataURL("image/png"); a.click();
   toast("تم تنزيل تقرير الحصة كصورة بنجاح!");
 }
+/////////////////////////////////////////////new2/////////////////////////////////
 
 async function confirmLockAndCompleteSession(sessionKey, sessionName) {
-  let nextHw = $("next_homework_input").value;
+  // 1. قراءة نص الواجب الجديد المكلف به الطلاب للحصة القادمة
+  let nextHw = $("next_homework_input") ? $("next_homework_input").value.trim() : "";
   if (nextHw) {
     data.homeworkReminders[sessionKey] = nextHw;
     localStorage.setItem("hw_reminders_" + user.uid, JSON.stringify(data.homeworkReminders));
   }
 
+  // 2. تحديد الطلاب المستهدفين من الحصة المباشرة
   let targetStudents = data.students.filter(s => sessionName.includes(s.name) || (sessionName.includes("مجموعة") && s.groupsSetup && s.groupsSetup.some(gs => sessionName.includes(data.groups.find(g=>g.id===gs.groupId)?.name))));
   if(targetStudents.length === 0) targetStudents = data.students;
 
+  // 3. التكرار وحفظ الحضور والواجبات والنقاط في Firestore لكل طالب
   for (let st of targetStudents) {
     let attSelect = $("ind_att_" + st.id);
     if (attSelect) {
@@ -2402,6 +2445,7 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
       let rawNote = $("ind_notes_" + st.id)?.value || "";
       let noteType = analyzeNoteSentiment(rawNote);
 
+      // حساب نقاط التفوق الموزونة
       let points = 10;
       if(att === "حاضر") points += 15;
       if(att === "متأخر") points += 5;
@@ -2417,18 +2461,23 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
       if(noteType === "إيجابي") points += 25;
       if(noteType === "سلبي") points -= 20;
 
+      // 🛠️ حفظ الواجب المباشر والربط التلقائي بأحدث واجب
+      let finalNextHw = nextHw !== "" ? nextHw : (getStudentHomeworkHistory(st.id).latestHomework || "لا يوجد واجب محدد");
+
       await col("attendance").add({
         studentId: st.id,
         studentName: st.name,
         date: nowDate(),
         status: att,
         homework: hw,
+        nextHomework: finalNextHw,
         noteType: noteType,
         notes: rawNote || (att === "أول حصة" ? "أول حصة (تعارف/تجريبية)" : "حصة مباشرة"),
         pointsGained: points,
         teacherId: user.uid
       });
 
+      // حفظ نقاط الكرت الذهبي
       await col("rewards").add({
         studentId: st.id,
         studentName: st.name,
@@ -2440,15 +2489,16 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
     }
   }
 
+  // 4. تعليم الحصة كمكتملة لليوم ومزامنة البيانات
   data.completedSessionsToday[sessionKey] = true;
   localStorage.setItem("completed_sessions_" + nowDate() + "_" + user.uid, JSON.stringify(data.completedSessionsToday));
 
   closeModal();
   await loadAll();
   playBeep(true);
-  toast(`تم إغلاق الحصة (${sessionName}) نهائياً اليوم وتسجيل كافة البيانات آلياً`);
+  toast(`تم إغلاق الحصة (${sessionName}) نهائياً اليوم وتسجيل الواجب آلياً لكل طالب ✅`);
 }
-
+//////////////////////////////////////////////////////////new2
 function makeupPage(c){
   c.innerHTML=`<section class="section">
     <h3>🔄 الحصص التعويضية المعلقة والذكية (فحص التعارض التلقائي)</h3>
@@ -3130,6 +3180,9 @@ function renderStudentProfileView(containerId, stId){
   // جلب بيانات الدورة والنظام المالي المحدثة الشاملة
   let cInfo = getStudentCycleInfo(s.id);
 
+  // جلب سجل الواجبات وأحدث واجب محدد عبر دالة الاستدعاء الذكية
+  let hwData = getStudentHomeworkHistory(s.id);
+
   // 1️⃣ جلب وتصنيف سجلات الحضور والامتحانات
   let allStudentAtt = data.attendance.filter(a => a.studentId === s.id);
 
@@ -3183,6 +3236,15 @@ function renderStudentProfileView(containerId, stId){
       <div><b>رقم الكود (ID):</b> #${esc(s.studentNo)}</div>
       <div><b>المرحلة والصف:</b> ${esc(s.stage)} — ${esc(s.grade)}</div>
       <div><b>المنطقة السكنية:</b> ${esc(s.location || "غير محدد")}</div>
+    </div>
+
+    <!-- 📌 كارت الواجب الحالي المباشر المكلف به الطالب للحصة القادمة -->
+    <div style="margin-top:16px;background:#fffbeb;padding:14px;border-radius:12px;border:1px solid #fde68a;border-right:6px solid #f59e0b;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div>
+        <b style="color:#b45309;font-size:13px;display:block">📌 أحدث واجب منزلّي مكلف به الطالب (للحصة القادمة):</b>
+        <span style="font-size:15px;font-weight:900;color:#1e293b;margin-top:4px;display:block">${esc(hwData.latestHomework)}</span>
+      </div>
+      <button class="small warning" onclick="editSpecificHomeworkForStudent('${s.id}')">✏️ تعديل الواجب الحالي</button>
     </div>
 
     <!-- 📊 كروت الملخص المحدثة (إظهار الحصص الفعلية بدقة) -->
@@ -3255,7 +3317,7 @@ function renderStudentProfileView(containerId, stId){
       </div>
     ` : ''}
 
-    <!-- 📚 سجل حضور الحصص والواجبات المنزلية والملاحظات (محدث بالواجب الجديد والحالي) -->
+    <!-- 📚 سجل حضور الحصص والواجبات المنزلية والملاحظات -->
     <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">📚 سجل الحصص والواجبات المنزلية التفصيلي:</h3>
     <div class="table-wrap" style="margin-top:8px">
       <table>
@@ -3279,7 +3341,13 @@ function renderStudentProfileView(containerId, stId){
                 <td><b>${esc(att.date)}</b></td>
                 <td><span class="tag ${att.status?.includes('غائب')?'danger':(att.status?.includes('متأخر')?'warning':'success')}">${esc(att.status)}</span></td>
                 <td><b>${esc(att.homework || '—')}</b></td>
-                <td><b style="color:#b45309">${esc(att.nextHomework || 'لا يوجد واجب جديد محدد')}</b></td>
+                <td>
+                  <b style="color:#b45309">${esc(att.nextHomework || hwData.latestHomework || 'لا يوجد واجب محدد')}</b>
+                  <br>
+                  <button class="small warning" style="margin-top:4px;padding:2px 6px;font-size:10px;" onclick="editSpecificHomework('${att.id}')">
+                    ✏️ تعديل الواجب
+                  </button>
+                </td>
                 <td><b style="color:#d97706">+${att.pointsGained || 0}</b></td>
                 <td><span class="${noteClass}">${icon} ${esc(att.notes || 'لا توجد ملاحظة')}</span></td>
               </tr>
@@ -3350,41 +3418,6 @@ function renderStudentProfileView(containerId, stId){
     <a href="https://wa.me/${s.phone}?text=${encodeURIComponent('أهلاً ولي أمر الطالب ' + s.name + '، إليك تقرير المتابعة الأكاديمية والمالية الشامل والملاحظات المؤرخة المعتمدة من Mr. Abdelhamed Ahmed System.')}" target="_blank" class="primary success" style="text-decoration:none">📱 إرسال التقرير الشامل لولي الأمر عبر WhatsApp</a>
   </div>`;
 }
-
-function scannerPage(c){
-  c.innerHTML=`<section class="section">
-    <h3>📷 ماسح الـ QR السريع مع التنبيه الصوتي</h3>
-    <div style="text-align:center">
-      <video id="webcam" style="width:100%;max-width:400px;border-radius:16px;border:3px solid #111827" autoplay playsinline></video>
-      <div id="scanResult" style="margin-top:12px;font-weight:800;font-size:16px;color:#047857"></div>
-    </div>
-  </section>`;
-  startQrScanner();
-}
-
-function startQrScanner(){
-  stopCamera();
-  let video=$("webcam"), canvas=document.createElement("canvas"), ctx=canvas.getContext("2d");
-  if(!video)return;
-  navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}}).then(s=>{window.scanStream=s; video.srcObject=s; tick();}).catch(e=>toast("تعذر الوصول إلى الكاميرا"));
-  function tick(){
-    if(video.readyState===video.HAVE_ENOUGH_DATA){
-      canvas.height=video.videoHeight; canvas.width=video.videoWidth; ctx.drawImage(video,0,0,canvas.width,canvas.height);
-      let code=jsQR(ctx.getImageData(0,0,canvas.width,canvas.height).data, canvas.width, canvas.height);
-      if(code){
-        let st=data.students.find(x=>x.studentNo===code.data||x.id===code.data);
-        if(st){
-          let status="حاضر";
-          $("scanResult").textContent=`✅ تم تسجيل: ${st.name} (${status})`;
-          col("attendance").add({studentId:st.id, studentName:st.name, date:nowDate(), status, homework:"تم التسليم ✅", noteType:"عادي", notes:"مسح QR آلي", teacherId:user.uid});
-          playBeep(true); toast("تم تسجيل حضور: "+st.name);
-        }
-      }
-    }
-    if(currentPage==="scanner") window.qrAnimFrame = requestAnimationFrame(tick); else stopCamera();
-  }
-}
-
 function attendancePage(c) {
   c.innerHTML = `
     <section class="section">
@@ -4633,7 +4666,7 @@ function analyticsPage(c) {
     }
   }, 100);
 }
-
+////////////////////////////////////////////////////////////new////////////////////////////////////
 function settingsPage(c){
   c.innerHTML=`<section class="section">
     <h3>⚙️ الإعدادات والنسخ الاحتياطي وتطهير البيانات</h3>
@@ -4657,7 +4690,112 @@ function settingsPage(c){
     <button class="primary danger" onclick="purgeData()">⚠️ تفريغ وحذف كافة بيانات البرنامج الآن</button>
   </section>`;
 }
+////////////////////////////////////////////////////////////new////////////////////////////////////
+async function fixOldHomeworkData() {
+  toast("⏳ جاري فحص ومعالجة سجلات الواجبات القديمة وتزامنها...");
+  try {
+    // 1. جلب الواجبات المحفوظة محلياً سابقاً في localStorage
+    let localHw = JSON.parse(localStorage.getItem("hw_reminders_" + user.uid) || "{}");
+    
+    // 2. جلب جميع سجلات الحضور والغياب الخاصة بالمعلم من Firestore
+    let attDocs = await col("attendance").where("teacherId", "==", user.uid).get();
+    
+    let count = 0;
+    let batch = db.batch();
 
+    attDocs.docs.forEach(docSnap => {
+      let attData = docSnap.data();
+      
+      // 3. فحص كافة السجلات القديمة التي تفتقد الواجب القادم (حتى لو كانت أول حصة للطالب)
+      if (!attData.nextHomework || attData.nextHomework === "لا يوجد واجب جديد محدد" || attData.nextHomework === "لا يوجد واجب محدد") {
+        let foundHw = "";
+        
+        // البحث عن واجب مطابق لاسم الطالب أو الحصة من السجل المحلي
+        for (let key in localHw) {
+          if (attData.studentName && key.includes(attData.studentName)) {
+            foundHw = localHw[key];
+            break;
+          }
+        }
+        
+        // تعيين النص القديم أو وضع النص الافتراضي لتفعيل التعديل والإظهار لولي الأمر
+        let updatedVal = foundHw || "لا يوجد واجب محدد (اضغط تعديل لإضافته)";
+        batch.update(docSnap.ref, { nextHomework: updatedVal });
+        count++;
+      }
+    });
+
+    // 4. تطبيق التحديث الجماعي (Batch Commit) وإعادة تحميل البيانات
+    if (count > 0) {
+      await batch.commit();
+      await loadAll();
+      playBeep(true);
+      alert(`✅ تم إصلاح ومعالجة ${count} سجل حصة قديمة بنجاح! وستظهر الآن بتقرير الطالب وبوابة ولي الأمر.`);
+    } else {
+      toast("ℹ️ جميع السجلات محدثة ومجهزة بالفعل ولا تحتاج إصلاح.");
+    }
+  } catch (e) {
+    alert("حدث خطأ أثناء المعالجة: " + e.message);
+  }
+}
+
+///////////////////////////////new1////////////////////////////////
+// 🔍 1. دالة استدعاء وتجميع الواجبات (الحديثة والقديمة) للطالب
+function getStudentHomeworkHistory(studentId) {
+  if (!data || !data.attendance) {
+    return { latestHomework: "لا يوجد واجب محدد", history: [] };
+  }
+
+  // أ) جلب كل حصص الطالب المرتبة زمنيًا من الأحدث للأقدم
+  let studentLogs = data.attendance
+    .filter(a => a.studentId === studentId && !a.examId && a.status !== "حضر الامتحان" && a.status !== "اختبار إلكتروني")
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  let history = [];
+  let latestHomework = "";
+
+  // ب) استخراج الواجبات المكتوبة صراحة في حقل nextHomework أو من الملاحظات القديمة
+  studentLogs.forEach(log => {
+    let hwText = log.nextHomework || "";
+
+    // إذا لم يكن الحقل صريحاً، نبحث في الملاحظات القديمة عن أي نص يخص الواجب
+    if (!hwText && log.notes && (log.notes.includes("واجب") || log.notes.includes("صـ") || log.notes.includes("حل"))) {
+      hwText = log.notes;
+    }
+
+    if (hwText && hwText !== "لا يوجد واجب محدد" && hwText !== "لا يوجد واجب جديد محدد") {
+      if (!latestHomework) {
+        latestHomework = hwText; // حفظ أحدث واجب تم العثور عليه
+      }
+      history.push({
+        date: log.date,
+        homework: hwText,
+        status: log.homework || "غير محدد",
+        attendanceStatus: log.status || "حاضر",
+        attId: log.id
+      });
+    }
+  });
+
+  // ج) إذا لم نجد واجب في سجل الحضور، نفحص الـ localStorage للواجبات المسجلة سابقاً
+  if (!latestHomework) {
+    let st = data.students.find(s => s.id === studentId);
+    if (st && data.homeworkReminders) {
+      for (let key in data.homeworkReminders) {
+        if (key.includes(st.name)) {
+          latestHomework = data.homeworkReminders[key];
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    latestHomework: latestHomework || "لا يوجد واجب محدد حالياً",
+    history: history
+  };
+}
+//////////////////////////////new1/////////////////////////////////
 function exportBackupJSON(){
   let dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data));
   let downloadAnchor = document.createElement('a');
@@ -5191,8 +5329,44 @@ window.promptAddLiability = function() {
   window.expensesPage(document.getElementById('content') || document.querySelector('.main-content'));
 };
 
-// ربط مباشر لضمان استدعائها في أي مكان بالنظام
-var expensesPage = window.expensesPage;
+// دالة تعديل وحفظ الواجب المطلوب لأي حصة قديمة مباشرة في السيرفر
+async function editSpecificHomework(attId) {
+  // 1. البحث عن سجل الحصة المحدد من البيانات المحملة
+  let attDoc = data.attendance.find(a => a.id === attId);
+  let currentHw = attDoc ? (attDoc.nextHomework || "") : "";
+  
+  // 2. إظهار نافذة إدخال الواجب المطلوب
+  let newHw = prompt("أدخل تفاصيل الواجب المطلوب لهذه الحصة (سيظهر لولي الأمر):", currentHw);
+  if (newHw === null) return; // عند إغلاق أو إلغاء النافذة
+
+  toast("جاري حفظ الواجب بالحصة...");
+  try {
+    // 3. تحديث قاعدة البيانات Firestore فوراً
+    await col("attendance").doc(attId).update({
+      nextHomework: newHw.trim() !== "" ? newHw.trim() : "لا يوجد واجب محدد"
+    });
+    
+    // 4. إعادة جلب البيانات المحلية وتنبيه المستخدم بنجاح العملية
+    await loadAll();
+    playBeep(true);
+    toast("✅ تم تحديث الواجب بنجاح!");
+
+    // 5. التحديث الفوري المباشر للواجهة المفتوحة دون الحاجة لإعادة فتح النافذة يدوياً
+    if (attDoc && attDoc.studentId) {
+      if ($("student360Container")) {
+        renderStudentProfileView("student360Container", attDoc.studentId);
+      } else if ($("reportPreview")) {
+        renderStudentProfileView("reportPreview", attDoc.studentId);
+      } else if ($("parentPortalContent")) {
+        renderStudentProfileView("parentPortalContent", attDoc.studentId);
+      } else {
+        openStudentAttendanceHistoryCard(attDoc.studentId);
+      }
+    }
+  } catch(e) {
+    alert("حدث خطأ أثناء الحفظ: " + e.message);
+  }
+}
 </script>
 </body>
 </html>
