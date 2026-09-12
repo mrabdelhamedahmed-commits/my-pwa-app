@@ -4942,8 +4942,18 @@ async function checkParentPortalView() {
 
       renderStudentProfileView("parentPortalContent", studentId);
 
+      // 🛡️ التأمين الإضافي: إخفاء وتعطيل أي أزرار تعديل أو تفاعلات خاصة بالمعلم لولي الأمر
       const actionsDivs = document.querySelectorAll("#parentPortalContent .actions");
       actionsDivs.forEach(div => div.style.display = "none");
+
+      // إخفاء أي أزرار تعديل للواجب قد يتم رصدها في محتوى البوابة
+      setTimeout(() => {
+        document.querySelectorAll("#parentPortalContent button").forEach(btn => {
+          if (btn.textContent.includes("تعديل") || btn.textContent.includes("✏️")) {
+            btn.style.display = "none";
+          }
+        });
+      }, 150);
 
     } catch (err) {
       $("parentPortalContent").innerHTML = `<div style="text-align:center; padding:40px; color:red;">⚠️ تعذر تحميل البيانات. يرجى التأكد من الاتصال بالإنترنت.</div>`;
@@ -5331,27 +5341,34 @@ window.promptAddLiability = function() {
 
 // دالة تعديل وحفظ الواجب المطلوب لأي حصة قديمة مباشرة في السيرفر
 async function editSpecificHomework(attId) {
-  // 1. البحث عن سجل الحصة المحدد من البيانات المحملة
+  // 1. التحقق الأمني الصارم: منع أي شخص غير المعلم من تعديل الواجب نهائياً
+  if (!user || !user.uid) {
+    alert("⛔ عذراً، هذه الصلاحية مخصصة للمعلم فقط ولا يمكن لولي الأمر تعديل الواجب أو التلاعب بالتقرير.");
+    return;
+  }
+
+  // 2. البحث عن سجل الحصة المحدد من البيانات المحملة
   let attDoc = data.attendance.find(a => a.id === attId);
   let currentHw = attDoc ? (attDoc.nextHomework || "") : "";
   
-  // 2. إظهار نافذة إدخال الواجب المطلوب
-  let newHw = prompt("أدخل تفاصيل الواجب المطلوب لهذه الحصة (سيظهر لولي الأمر):", currentHw);
+  // 3. إظهار نافذة إدخال الواجب المطلوب (للمعلم فقط)
+  let newHw = prompt("أدخل تفاصيل الواجب المطلوب لهذه الحصة (صلاحية المعلم فقط):", currentHw);
   if (newHw === null) return; // عند إغلاق أو إلغاء النافذة
 
-  toast("جاري حفظ الواجب بالحصة...");
+  toast("جاري حفظ وتأمين التعديل...");
   try {
-    // 3. تحديث قاعدة البيانات Firestore فوراً
+    // 4. تحديث قاعدة البيانات Firestore وتوثيق أن التعديل تم بمعرفة المعلم حصراً
     await col("attendance").doc(attId).update({
-      nextHomework: newHw.trim() !== "" ? newHw.trim() : "لا يوجد واجب محدد"
+      nextHomework: newHw.trim() !== "" ? newHw.trim() : "لا يوجد واجب محدد",
+      lastUpdatedByTeacher: user.uid
     });
     
-    // 4. إعادة جلب البيانات المحلية وتنبيه المستخدم بنجاح العملية
+    // 5. إعادة جلب البيانات المحلية وتنبيه المستخدم بنجاح العملية
     await loadAll();
     playBeep(true);
-    toast("✅ تم تحديث الواجب بنجاح!");
+    toast("✅ تم تحديث الواجب بنجاح وبصلاحية المعلم المعتمدة!");
 
-    // 5. التحديث الفوري المباشر للواجهة المفتوحة دون الحاجة لإعادة فتح النافذة يدوياً
+    // 6. التحديث الفوري المباشر للواجهة المفتوحة دون الحاجة لإعادة فتح النافذة يدوياً
     if (attDoc && attDoc.studentId) {
       if ($("student360Container")) {
         renderStudentProfileView("student360Container", attDoc.studentId);
@@ -5359,12 +5376,20 @@ async function editSpecificHomework(attId) {
         renderStudentProfileView("reportPreview", attDoc.studentId);
       } else if ($("parentPortalContent")) {
         renderStudentProfileView("parentPortalContent", attDoc.studentId);
+        // تأكيد إخفاء أزرار التعديل في بوابة ولي الأمر إن وجدت
+        setTimeout(() => {
+          document.querySelectorAll("#parentPortalContent button").forEach(btn => {
+            if (btn.textContent.includes("تعديل") || btn.textContent.includes("✏️")) {
+              btn.style.display = "none";
+            }
+          });
+        }, 100);
       } else {
         openStudentAttendanceHistoryCard(attDoc.studentId);
       }
     }
   } catch(e) {
-    alert("حدث خطأ أثناء الحفظ: " + e.message);
+    alert("حدث خطأ أثناء الحفظ الأمني: " + e.message);
   }
 }
 </script>
