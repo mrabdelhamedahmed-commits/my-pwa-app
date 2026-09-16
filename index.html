@@ -679,14 +679,29 @@ function stopCamera(){
 async function loadAll(){
   if(!user)return;
   try{
-    const ns=['students', 'groups', 'payments', 'schoolSalaries', 'extraIncome', 'expenses', 'liabilities', 'lessons', 'attendance', 'exams', 'questionBank', 'makeups', 'rewards', 'materials', 'schoolSchedule', 'schoolSettings', 'dayCancellations', 'onlineQuizzes'];
+    // إضافة completedSessions لقائمة المجموعات المحملة سحابياً
+    const ns=['students', 'groups', 'payments', 'schoolSalaries', 'extraIncome', 'expenses', 'liabilities', 'lessons', 'attendance', 'exams', 'questionBank', 'makeups', 'rewards', 'materials', 'schoolSchedule', 'schoolSettings', 'dayCancellations', 'onlineQuizzes', 'completedSessions'];
     const res=await Promise.all(ns.map(n=>col(n).where("teacherId","==",user.uid).get()));
     ns.forEach((n,i)=>data[n]=res[i].docs.map(d=>({id:d.id,...d.data()})));
     
     let localHw = localStorage.getItem("hw_reminders_" + user.uid);
     if(localHw) data.homeworkReminders = JSON.parse(localHw);
+
+    // دمج الحصص المغلقة من localStorage ومن Firestore لليوم الحالي
+    data.completedSessionsToday = {};
     let localCompleted = localStorage.getItem("completed_sessions_" + nowDate() + "_" + user.uid);
-    if(localCompleted) data.completedSessionsToday = JSON.parse(localCompleted);
+    if(localCompleted) {
+      try { data.completedSessionsToday = JSON.parse(localCompleted); } catch(e){}
+    }
+
+    // دمج السجلات القادمة سحابياً من Firestore لمنع فتح الحصة من أي جهاز آخر
+    if(Array.isArray(data.completedSessions)) {
+      data.completedSessions.forEach(cs => {
+        if(cs.date === nowDate() && cs.sessionKey) {
+          data.completedSessionsToday[cs.sessionKey] = true;
+        }
+      });
+    }
 
     let isOnline = navigator.onLine;
     $("syncStatus").innerHTML = isOnline 
@@ -2252,26 +2267,98 @@ function startIndependentSession(sessionKey, originalTime, sessionName){
 
 function confirmStartIndependentSession(sessionKey, originalTime, sessionName) {
   closeModal();
-  let startTime = new Date();
-  
-  activeLiveSessions[sessionKey] = {
-    startTime: startTime,
-    seconds: 0,
-    timerInterval: setInterval(() => {
-      if (activeLiveSessions[sessionKey]) {
-        activeLiveSessions[sessionKey].seconds++;
-        
-        // البحث عن عنصر عرض المؤقت وتحديث النص بالوقت الجديد
-        let timerDisplay = document.querySelector(`[id^="timer_display_"]`);
-        if (timerDisplay) {
-          timerDisplay.textContent = formatSeconds(activeLiveSessions[sessionKey].seconds);
-        }
+  let startTimestamp = Date.now();
+
+  // 1. حفظ الطابع الزمني المرجعي في localStorage لتمرير العد حتى بعد إعادة فتح التطبيق
+  let savedTimers = JSON.parse(localStorage.getItem("active_live_timers_" + (user?.uid || "")) || "{}");
+  savedTimers[sessionKey] = {
+    startTimestamp: startTimestamp,
+    originalTime: originalTime,
+    sessionName: sessionName
+  };
+  localStorage.setItem("active_live_timers_" + (user?.uid || ""), JSON.stringify(savedTimers));
+
+  // 2. تشغيل الحلقة الزمنية بالاعتماد على الفرق الزمني الفعلي Date.now() - startTimestamp
+  startSessionTimerLoop(sessionKey, startTimestamp);
+
+  toast(`🚀 تم بدء حصة: ${sessionName} بمؤقت زمني دقيق ومستمر`);
+  render();
+}
+
+// 🛠️ الدالة المساعدة لتشغيل وحساب العداد الزمني الفعلي بشكل مستمر للحصة المباشرة
+function startSessionTimerLoop(sessionKey, startTimestamp) {
+  // 1. إلغاء أي مؤقت زمني سابق لنفس الحصة لمنع تداخل الترددات (Intervals)
+  if (activeLiveSessions[sessionKey] && activeLiveSessions[sessionKey].timerInterval) {
+    clearInterval(activeLiveSessions[sessionKey].timerInterval);
+  }
+
+  // 2. دالة التحديث الدوري لنص المؤقت والحساب الدقيق للثواني المنقضية
+  let updateTimer = () => {
+    // حساب الفرق الزمني الفعلي بالثواني بناءً على الطابع الزمني المرجعي (مستمر حتى بعد إغلاق التطبيق)
+    let elapsedSeconds = Math.floor((Date.now() - startTimestamp) / 1000);
+    if (elapsedSeconds < 0) elapsedSeconds = 0;
+
+    if (!activeLiveSessions[sessionKey]) {
+      activeLiveSessions[sessionKey] = {};
+    }
+    
+    activeLiveSessions[sessionKey].startTimestamp = startTimestamp;
+    activeLiveSessions[sessionKey].seconds = elapsedSeconds;
+
+    // 3. تحديث نص المؤقت في جميع الواجهات والعناصر النشطة بالصفحة
+    let timerDisplays = document.querySelectorAll(`[id^="timer_display_"]`);
+    timerDisplays.forEach(el => {
+      if (typeof formatSeconds === "function") {
+        el.textContent = formatSeconds(elapsedSeconds);
       }
-    }, 1000)
+    });
   };
 
-  toast(`🚀 تم بدء حصة: ${sessionName} بمؤقت زمني منفصل`);
-  render();
+  // 4. تنفيذ التحديث فوراً لمنع التأخير لمدة ثانية عند بدء التشغيل
+  updateTimer();
+
+  // 5. ضبط العداد الزمني ليعمل كل ثانية مع تخزين معرف الـ Interval
+  let timerInterval = setInterval(updateTimer, 1000);
+
+  activeLiveSessions[sessionKey] = {
+    startTimestamp: startTimestamp,
+    seconds: Math.floor((Date.now() - startTimestamp) / 1000),
+    timerInterval: timerInterval
+  };
+}
+
+// 🔄 دالة استرجاع الحصص النشطة والمؤقتات المستمرة فور فتح التطبيق
+function restoreActiveLiveSessions() {
+  if (!user || !user.uid) return;
+  
+  let savedTimers = {};
+  try {
+    let raw = localStorage.getItem("active_live_timers_" + user.uid);
+    if (raw) savedTimers = JSON.parse(raw);
+  } catch (e) {
+    console.error("خطأ في قراءة المؤقتات النشطة من localStorage:", e);
+    savedTimers = {};
+  }
+
+  let hasChanges = false;
+
+  for (let sessionKey in savedTimers) {
+    let tData = savedTimers[sessionKey];
+    if (tData && tData.startTimestamp) {
+      // فحص ما إذا كانت الحصة غير مكتملة اليوم لإعادة تشغيل المؤقت الزمني الفعلي لها
+      if (!data.completedSessionsToday || !data.completedSessionsToday[sessionKey]) {
+        startSessionTimerLoop(sessionKey, tData.startTimestamp);
+      } else {
+        // إذا كانت الحصة مكتملة بالفعل، يتم تنظيفها من المؤقتات المحفوظة
+        delete savedTimers[sessionKey];
+        hasChanges = true;
+      }
+    }
+  }
+
+  if (hasChanges) {
+    localStorage.setItem("active_live_timers_" + user.uid, JSON.stringify(savedTimers));
+  }
 }
 
 function finishIndependentSession(sessionKey, sessionName) {
@@ -2485,9 +2572,23 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
     }
   }
 
-  // 4. تعليم الحصة كمكتملة لليوم ومزامنة البيانات
+  // 4. تعليم الحصة كمكتملة لليوم ومزامنة البيانات محلياً وفي Firestore
   data.completedSessionsToday[sessionKey] = true;
   localStorage.setItem("completed_sessions_" + nowDate() + "_" + user.uid, JSON.stringify(data.completedSessionsToday));
+
+  // 🔒 الربط مع قاعدة البيانات Firestore لمنع إعادة فتح الحصة مطلقاً
+  try {
+    let docId = `${nowDate()}_${user.uid}_${sessionKey.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    await col("completedSessions").doc(docId).set({
+      sessionKey: sessionKey,
+      sessionName: sessionName,
+      date: nowDate(),
+      teacherId: user.uid,
+      completedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  } catch (err) {
+    console.error("خطأ أثناء تسجيل إغلاق الحصة بـ Firestore:", err);
+  }
 
   closeModal();
   await loadAll();
@@ -3170,7 +3271,8 @@ function rewardsPage(c){
 }
 
 function renderStudentProfileView(containerId, stId){
-  let s = data.students.find(x => x.id === stId);
+  // 🔍 تحويل المعرفات صراحة لنصوص لضمان المطابقة الكاملة
+  let s = (data.students || []).find(x => String(x.id) === String(stId));
   if(!s) return;
 
   // جلب بيانات الدورة والنظام المالي المحدثة الشاملة
@@ -3179,35 +3281,178 @@ function renderStudentProfileView(containerId, stId){
   // جلب سجل الواجبات وأحدث واجب محدد عبر دالة الاستدعاء الذكية
   let hwData = getStudentHomeworkHistory(s.id);
 
-  // 1️⃣ جلب وتصنيف سجلات الحضور والامتحانات
-  let allStudentAtt = data.attendance.filter(a => a.studentId === s.id);
+  // 🔍 1️⃣ محرك التجميع الذكي الشامل للامتحانات والتقييمات من كافة المجموعات
+  let combinedExamsMap = new Map();
 
-  // تصفية الحصص التعليمية فقط (استبعاد الامتحانات والدرجات)
+  // أ) جلب الامتحانات من جدول الحضور (data.attendance) مع مطابقة النصوص صراحة
+  (data.attendance || []).forEach(a => {
+    if (String(a.studentId) === String(s.id)) {
+      let isExamRecord = a.examId || 
+                         a.isExam || 
+                         a.type === "exam" || 
+                         a.score !== undefined || 
+                         (a.status && (a.status.includes("امتحان") || a.status.includes("اختبار"))) ||
+                         (a.notes && (a.notes.includes("امتحان") || a.notes.includes("اختبار") || a.notes.includes("درجة"))) ||
+                         (a.homework && (a.homework.includes("امتحان") || a.homework.includes("اختبار")));
+      
+      if (isExamRecord) {
+        let key = a.id || (a.date + "_" + (a.examId || a.examTitle || "exam"));
+        let rawVal = a.score !== undefined ? a.score : (a.degree !== undefined ? a.degree : (a.mark !== undefined ? a.mark : a.pointsGained));
+        let scoreVal = rawVal !== undefined && rawVal !== null && !isNaN(Number(rawVal)) ? Number(rawVal) : 0;
+        let maxMark = Number(a.totalMark || a.maxScore || a.fullMark || 100);
+
+        // الربط الذكي مع تحويل المعرفات صراحة لنصوص
+        let titleFromExams = a.examId ? ((data.exams || []).find(e => String(e.id) === String(a.examId))?.title || (data.exams || []).find(e => String(e.id) === String(a.examId))?.name) : null;
+        let finalExamTitle = a.examTitle || titleFromExams || (a.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي");
+
+        combinedExamsMap.set(key, {
+          id: a.id,
+          date: a.date || nowDate(),
+          examTitle: finalExamTitle,
+          score: scoreVal,
+          totalMark: maxMark,
+          notes: a.notes || a.status || "تم التصحيح والتدقيق",
+          source: "attendance"
+        });
+      }
+    }
+  });
+
+  // ب) جلب الامتحانات المخصصة للطالب فقط من جدول الامتحانات (data.exams)
+  (data.exams || []).forEach(ex => {
+    let title = ex.title || ex.name || "امتحان تقييمي مدمج";
+    let date = ex.date || nowDate();
+    let maxMark = Number(ex.totalMark || ex.maxScore || ex.fullMark || 100);
+    let key = "exam_doc_" + ex.id;
+
+    let detectedScore = null;
+    let detectedNotes = ex.notes || "اختبار مدمج معتمد";
+    let detectedDate = date;
+
+    // دالة فحص دقيقة لدرجة هذا الطالب تحديداً داخل الامتحان
+    let findInContainer = (container) => {
+      if (!container) return null;
+      if (Array.isArray(container)) {
+        let item = container.find(r => r && (String(r.studentId) === String(s.id) || String(r.stId) === String(s.id) || String(r.id) === String(s.id) || (s.studentNo && String(r.studentNo || r.code) === String(s.studentNo))));
+        if (item) {
+          if (typeof item === 'number' || (typeof item === 'string' && !isNaN(Number(item)))) return { score: Number(item) };
+          let v = item.score ?? item.degree ?? item.mark ?? item.grade ?? item.points ?? item.studentScore ?? item.val ?? item.value;
+          if (v !== undefined && v !== null && !isNaN(Number(v))) {
+            return { score: Number(v), notes: item.notes, date: item.date };
+          }
+        }
+      } else if (typeof container === 'object') {
+        let item = container[s.id] ?? container[String(s.id)] ?? (s.studentNo ? container[s.studentNo] : undefined);
+        if (item !== undefined && item !== null) {
+          if (typeof item === 'number' || (typeof item === 'string' && !isNaN(Number(item)))) return { score: Number(item) };
+          if (typeof item === 'object') {
+            let v = item.score ?? item.degree ?? item.mark ?? item.grade ?? item.points ?? item.studentScore ?? item.val ?? item.value;
+            if (v !== undefined && v !== null && !isNaN(Number(v))) {
+              return { score: Number(v), notes: item.notes, date: item.date };
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    let containers = [ex.results, ex.scores, ex.degrees, ex.grades, ex.marks, ex.studentsResults, ex.students];
+    for (let c of containers) {
+      let res = findInContainer(c);
+      if (res) {
+        detectedScore = res.score;
+        if (res.notes) detectedNotes = res.notes;
+        if (res.date) detectedDate = res.date;
+        break;
+      }
+    }
+
+    if (detectedScore === null && (String(ex.studentId) === String(s.id) || (s.studentNo && String(ex.studentNo || ex.code) === String(s.studentNo)))) {
+      let v = ex.score ?? ex.degree ?? ex.mark ?? ex.grade ?? ex.points ?? ex.studentScore;
+      if (v !== undefined && v !== null && !isNaN(Number(v))) {
+        detectedScore = Number(v);
+      }
+    }
+
+    // 🎯 🔍 التخصيص الدقيق الخاص بالطالب:
+    let isDirectForStudent = String(ex.studentId) === String(s.id) || (s.studentNo && String(ex.studentNo || ex.code) === String(s.studentNo));
+    
+    let studentGroupIds = (s.groupsSetup || []).map(g => String(g.groupId));
+    if (s.groupId) studentGroupIds.push(String(s.groupId));
+    let isForStudentGroup = ex.groupId && studentGroupIds.includes(String(ex.groupId));
+
+    let hasGradedScore = detectedScore !== null;
+
+    // استدعاء الامتحان فقط إذا كان موجه للطالب بعينه أو لمجموعته أو مسجل له درجة
+    if (isDirectForStudent || isForStudentGroup || hasGradedScore) {
+      let finalScore = hasGradedScore ? detectedScore : "قيد الرصد ⏳";
+      combinedExamsMap.set(key, {
+        id: ex.id,
+        date: detectedDate,
+        examTitle: title,
+        score: finalScore,
+        totalMark: maxMark,
+        notes: hasGradedScore ? detectedNotes : "امتحان مخصص ومجدول (قيد الرصد)",
+        source: "exams_collection"
+      });
+    }
+  });
+
+  // ج) جلب الامتحانات من التقييمات الإلكترونية التفاعلية
+  (data.onlineQuizzes || []).forEach(qz => {
+    let title = qz.title || qz.name || "اختبار إلكتروني تفاعلي";
+    let date = qz.date || nowDate();
+    let maxMark = Number(qz.totalMark || qz.maxScore || 100);
+    let key = "quiz_doc_" + qz.id;
+
+    let sub = null;
+    if (Array.isArray(qz.submissions)) {
+      sub = qz.submissions.find(r => r && (String(r.studentId) === String(s.id) || String(r.stId) === String(s.id) || String(r.id) === String(s.id)));
+    } else if (qz.submissions && typeof qz.submissions === 'object') {
+      sub = qz.submissions[s.id] ?? qz.submissions[String(s.id)];
+    } else if (Array.isArray(qz.results)) {
+      sub = qz.results.find(r => r && (String(r.studentId) === String(s.id) || String(r.stId) === String(s.id) || String(r.id) === String(s.id)));
+    }
+
+    if (sub) {
+      let v = typeof sub === 'number' ? sub : (sub.score ?? sub.degree ?? sub.mark ?? sub.grade ?? sub.points ?? 0);
+      combinedExamsMap.set(key, {
+        id: qz.id,
+        date: sub.date || date,
+        examTitle: title,
+        score: Number(v),
+        totalMark: maxMark,
+        notes: sub.notes || "اختبار إلكتروني عبر المنصة",
+        source: "online_quizzes"
+      });
+    }
+  });
+
+  // ترتيب زمني
+  let stExams = Array.from(combinedExamsMap.values()).sort((a,b) => (b.date || "").localeCompare(a.date || ""));
+
+  // 2️⃣ تصفية الحصص التعليمية فقط
+  let allStudentAtt = (data.attendance || []).filter(a => String(a.studentId) === String(s.id));
   let stLessons = allStudentAtt.filter(a => 
     !a.examId && 
+    !a.isExam &&
+    a.type !== "exam" &&
     a.status !== "حضر الامتحان" && 
     a.status !== "اختبار إلكتروني" && 
-    a.score === undefined
+    a.score === undefined &&
+    !(a.status && (a.status.includes("امتحان") || a.status.includes("اختبار")))
   ).sort((a,b) => b.date.localeCompare(a.date));
 
-  // تصفية سجل الامتحانات والتقييمات فقط
-  let stExams = allStudentAtt.filter(a => 
-    a.examId || 
-    a.status === "حضر الامتحان" || 
-    a.status === "اختبار إلكتروني" || 
-    a.score !== undefined
-  ).sort((a,b) => b.date.localeCompare(a.date));
-
-  // 2️⃣ حساب الإحصائيات الدقيقة للحصص والالتزام
+  // 3️⃣ حساب الإحصائيات الدقيقة للحصص والالتزام
   let totalLessons = stLessons.length;
   let presentCount = stLessons.filter(a => a.status && (a.status.includes("حاضر") || a.status.includes("أول حصة"))).length;
   let lateCount = stLessons.filter(a => a.status && a.status.includes("متأخر")).length;
   let hwDoneCount = stLessons.filter(a => a.homework && a.homework.includes("تم")).length;
 
-  // 3️⃣ حساب الماليّات ورصيد الكرت الذهبي
-  let stRewards = (data.rewards || []).filter(r => r.studentId === s.id);
+  // 4️⃣ حساب الماليّات ورصيد الكرت الذهبي
+  let stRewards = (data.rewards || []).filter(r => String(r.studentId) === String(s.id));
   let totalGoldenPoints = stRewards.reduce((acc, r) => acc + Number(r.points || 0), 0);
-  let stPayments = data.payments.filter(p => p.studentId === s.id).sort((a,b) => b.date.localeCompare(a.date));
+  let stPayments = (data.payments || []).filter(p => String(p.studentId) === String(s.id)).sort((a,b) => b.date.localeCompare(a.date));
 
   let teacherName = localStorage.getItem("teacherName") || user?.displayName || "Mr. Abdelhamed Ahmed";
   let teacherPhoto = user?.photoURL || localStorage.getItem("teacherPhoto") || DEFAULT_AVATAR;
@@ -3216,7 +3461,6 @@ function renderStudentProfileView(containerId, stId){
   $(containerId).innerHTML = `
   <div id="captureReport" class="receipt" style="width:100%;max-width:850px;margin:auto;background:#fff;padding:24px;border:3px solid #111827;border-radius:18px;direction:rtl;text-align:right;box-shadow:0 10px 25px rgba(0,0,0,0.05)">
     
-    <!-- رأس التقرير الرسمية -->
     <div class="receipt-head" style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #111827;padding-bottom:12px">
       <div>
         <h2 style="margin:0;color:#111827;font-size:20px">Mr. Abdelhamed Ahmed System</h2>
@@ -3226,7 +3470,6 @@ function renderStudentProfileView(containerId, stId){
       <img src="${teacherPhoto}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:3px solid #f59e0b" onerror="this.onerror=null;this.src=DEFAULT_AVATAR">
     </div>
 
-    <!-- 👤 بيانات الطالب الأساسية -->
     <div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;background:#f8fafc;padding:14px;border-radius:12px;border:1px solid #e2e8f0;font-size:13px">
       <div><b>اسم الطالب بالكامل:</b> ${esc(s.name)}</div>
       <div><b>رقم الكود (ID):</b> #${esc(s.studentNo)}</div>
@@ -3234,7 +3477,6 @@ function renderStudentProfileView(containerId, stId){
       <div><b>المنطقة السكنية:</b> ${esc(s.location || "غير محدد")}</div>
     </div>
 
-    <!-- 📌 كارت الواجب الحالي المباشر المكلف به الطالب للحصة القادمة -->
     <div style="margin-top:16px;background:#fffbeb;padding:14px;border-radius:12px;border:1px solid #fde68a;border-right:6px solid #f59e0b;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div>
         <b style="color:#b45309;font-size:13px;display:block">📌 أحدث واجب منزلّي مكلف به الطالب (للحصة القادمة):</b>
@@ -3243,7 +3485,6 @@ function renderStudentProfileView(containerId, stId){
       <button class="small warning" onclick="editSpecificHomeworkForStudent('${s.id}')">✏️ تعديل الواجب الحالي</button>
     </div>
 
-    <!-- 📊 كروت الملخص المحدثة (إظهار الحصص الفعلية بدقة) -->
     <h3 style="margin-top:20px;margin-bottom:10px;color:#1e293b;font-size:15px">📊 ملخص الحضور والالتزام بالحصلات:</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;text-align:center;font-size:12px">
       <div style="background:#ecfdf5;padding:12px;border-radius:10px;border:1px solid #a7f3d0">
@@ -3268,7 +3509,6 @@ function renderStudentProfileView(containerId, stId){
       </div>
     </div>
 
-    <!-- 💰 تفاصيل النظام المالي وموقف الاشتراك لكل مجموعة / نظام بالحصة -->
     <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">💰 تفاصيل الاشتراك والموقف المالي لكل مجموعة:</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-top:10px">
       ${(cInfo.groupsBreakdown || []).map(g => {
@@ -3289,7 +3529,6 @@ function renderStudentProfileView(containerId, stId){
       }).join("")}
     </div>
 
-    <!-- ملخص إجمالي المديونية والمدفوعات -->
     <div style="background:#f1f5f9;padding:12px;border-radius:12px;border:1px solid #cbd5e1;margin-top:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px">
       <div><b>إجمالي المبالغ المسددة الكلي:</b> <b style="color:#047857;font-size:15px">${cInfo.totalPaid} ج.م</b></div>
       <div><b>إجمالي المديونية المستحقة المتبقية:</b> <b style="color:${cInfo.debt > 0 ? '#be123c' : '#047857'};font-size:15px">${cInfo.debt > 0 ? cInfo.debt + ' ج.م' : 'مسدد بالكامل ✅'}</b></div>
@@ -3313,13 +3552,13 @@ function renderStudentProfileView(containerId, stId){
       </div>
     ` : ''}
 
-    <!-- 📚 سجل حضور الحصص والواجبات المنزلية والملاحظات -->
     <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">📚 سجل الحصص والواجبات المنزلية التفصيلي:</h3>
     <div class="table-wrap" style="margin-top:8px">
       <table>
         <thead>
           <tr style="background:#f1f5f9">
             <th>تاريخ الحصة</th>
+            <th>المجموعة / الحصة</th>
             <th>حالة الحضور</th>
             <th>واجب الحصة (موقف التسليم)</th>
             <th>الواجب الجديد المكلف به (للحصة القادمة)</th>
@@ -3328,13 +3567,23 @@ function renderStudentProfileView(containerId, stId){
           </tr>
         </thead>
         <tbody>
-          ${stLessons.length === 0 ? `<tr><td colspan="6" style="text-align:center;color:#718096">لا توجد حصص تعليمية مسجلة حتى الآن</td></tr>` :
-            stLessons.map(att => {
+          ${stLessons.length === 0 ? `<tr><td colspan="7" style="text-align:center;color:#718096">لا توجد حصص تعليمية مسجلة حتى الآن</td></tr>` :
+            stLessons.map((att, idx) => {
               let noteClass = att.noteType === 'إيجابي' ? 'note-badge-positive' : (att.noteType === 'سلبي' ? 'note-badge-negative' : 'note-badge-neutral');
               let icon = att.noteType === 'إيجابي' ? '🌟 ' : (att.noteType === 'سلبي' ? '⚠️ ' : '💬 ');
+              
+              let groupObj = (data.groups || []).find(g => String(g.id) === String(att.groupId));
+              let groupDisplayName = groupObj ? groupObj.name : (att.groupName || "حصة عامة");
+              let sessionNum = `حصة #${stLessons.length - idx}`;
+
               return `
               <tr>
                 <td><b>${esc(att.date)}</b></td>
+                <td>
+                  <span class="tag" style="background:#fef3c7;color:#b45309">${esc(groupDisplayName)}</span>
+                  <br>
+                  <span style="font-size:10px;color:#64748b">${sessionNum}</span>
+                </td>
                 <td><span class="tag ${att.status?.includes('غائب')?'danger':(att.status?.includes('متأخر')?'warning':'success')}">${esc(att.status)}</span></td>
                 <td><b>${esc(att.homework || '—')}</b></td>
                 <td>
@@ -3352,31 +3601,36 @@ function renderStudentProfileView(containerId, stId){
       </table>
     </div>
 
-    <!-- 🏆 سجل درجات الامتحانات والتقييمات تفصيلاً -->
     <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">🏆 سجل درجات الامتحانات والتقييمات تفصيلاً (${stExams.length} اختبار):</h3>
     <div class="table-wrap" style="margin-top:8px">
       <table>
         <thead>
           <tr style="background:#fff7ed">
             <th>تاريخ الامتحان</th>
-            <th>عنوان الاختبار</th>
+            <th>عنوان الاختبار ومصدره</th>
             <th>درجة الطالب</th>
-            <th>التقييم</th>
+            <th>التقييم الفعلي</th>
             <th>ملاحظات المصحح</th>
           </tr>
         </thead>
         <tbody>
           ${stExams.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#718096">لا توجد امتحانات أو درجات مسجلة لهذا الطالب حتى الآن</td></tr>` :
             stExams.map(ex => {
-              let score = Number(ex.score || 0);
-              let badgeColor = score >= 85 ? '#059669' : (score >= 65 ? '#d97706' : '#dc2626');
-              let ratingText = score >= 85 ? 'ممتاز 🌟' : (score >= 65 ? 'جيد جداً 👍' : (score >= 50 ? 'مقبول ⚠️' : 'ضعيف ❌'));
+              let isPending = ex.score === "قيد الرصد ⏳";
+              let scoreDisplay = isPending ? ex.score : Number(ex.score || 0);
+              let totalMark = Number(ex.totalMark || 100);
+              let percentage = (!isPending && totalMark > 0) ? Math.round((Number(ex.score) / totalMark) * 100) : 0;
+              
+              let badgeColor = isPending ? '#d97706' : (percentage >= 85 ? '#059669' : (percentage >= 65 ? '#d97706' : '#dc2626'));
+              let ratingText = isPending ? 'في الانتظار ⏳' : (percentage >= 85 ? 'ممتاز 🌟' : (percentage >= 65 ? 'جيد جداً 👍' : (percentage >= 50 ? 'مقبول ⚠️' : 'ضعيف ❌')));
+              let displayRatio = isPending ? `<b style="font-size:15px;color:#d97706">${scoreDisplay}</b>` : `<b style="font-size:16px;color:${badgeColor}">${scoreDisplay} / ${totalMark}</b> <span style="font-size:11px;color:#64748b">(${percentage}%)</span>`;
+
               return `
               <tr>
                 <td><b>${esc(ex.date)}</b></td>
-                <td><b>${esc(ex.examTitle || (ex.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي"))}</b></td>
-                <td><b style="font-size:16px;color:${badgeColor}">${score} / 100</b></td>
-                <td><span class="tag" style="background:#f0fdf4;color:${badgeColor};border:1px solid ${badgeColor}">${ratingText}</span></td>
+                <td><b>${esc(ex.examTitle)}</b></td>
+                <td>${displayRatio}</td>
+                <td><span class="tag" style="background:${isPending ? '#fef3c7' : '#f0fdf4'};color:${badgeColor};border:1px solid ${badgeColor}">${ratingText}</span></td>
                 <td>${esc(ex.notes || 'تم التصحيح والتدقيق')}</td>
               </tr>
             `}).join("")}
@@ -3384,7 +3638,6 @@ function renderStudentProfileView(containerId, stId){
       </table>
     </div>
 
-    <!-- 🌟 تفاصيل نظام الكرت الذهبي والنقاط -->
     <h3 style="margin-top:22px;border-bottom:2px solid #111827;padding-bottom:6px;color:#1e293b;font-size:15px">🏆 رصيد ونقاط الكرت الذهبي (Golden Card):</h3>
     <div style="background:#fffbeb;padding:14px;border-radius:12px;border:1px solid #fde68a;margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div>
@@ -3394,7 +3647,6 @@ function renderStudentProfileView(containerId, stId){
       <span class="golden-card" style="font-size:18px">🌟 ${totalGoldenPoints} نقطة تفوق</span>
     </div>
 
-    <!-- اعتماد وتوقيع التقرير -->
     <div class="sign-area" style="margin-top:28px;display:flex;justify-content:space-between;align-items:flex-end">
       <div>
         <div style="font-size:12px">تاريخ إصدار التقرير: ${nowDate()}</div>
@@ -3414,6 +3666,7 @@ function renderStudentProfileView(containerId, stId){
     <a href="https://wa.me/${s.phone}?text=${encodeURIComponent('أهلاً ولي أمر الطالب ' + s.name + '، إليك تقرير المتابعة الأكاديمية والمالية الشامل والملاحظات المؤرخة المعتمدة من Mr. Abdelhamed Ahmed System.')}" target="_blank" class="primary success" style="text-decoration:none">📱 إرسال التقرير الشامل لولي الأمر عبر WhatsApp</a>
   </div>`;
 }
+
 function attendancePage(c) {
   c.innerHTML = `
     <section class="section">
@@ -3489,18 +3742,18 @@ function renderAttendanceDirectory() {
 
 // 📋 كارت سجل الطالب وبوابة ولي الأمر (عرض الحصص والدرجات بشكل منفصل)
 function openStudentAttendanceHistoryCard(studentId) {
-  let st = data.students.find(s => s.id === studentId);
+  let st = (data.students || []).find(s => String(s.id) === String(studentId));
   if (!st) return;
 
   // 1️⃣ فصل الحصص المسجلة عن الامتحانات والدرجات
   let allLogs = data.attendance || [];
 
-  // الحصص التعليمية فقط
-  let stAttLogs = allLogs.filter(a => a.studentId === studentId && a.status && !a.examId && a.status !== "حضر الامتحان" && a.score === undefined)
-                         .sort((a, b) => b.date.localeCompare(a.date));
+  // الحصص التعليمية فقط مع تحويل المعرفات صراحة لنصوص لضمان المطابقة
+  let stAttLogs = allLogs.filter(a => String(a.studentId) === String(studentId) && a.status && !a.examId && a.status !== "حضر الامتحان" && a.score === undefined)
+                          .sort((a, b) => b.date.localeCompare(a.date));
 
   // سجل الامتحانات والدرجات المجلوبة للطالب
-  let stExamLogs = allLogs.filter(a => a.studentId === studentId && (a.examId || a.status === "حضر الامتحان" || a.score !== undefined))
+  let stExamLogs = allLogs.filter(a => String(a.studentId) === String(studentId) && (a.examId || a.status === "حضر الامتحان" || a.score !== undefined))
                           .sort((a, b) => b.date.localeCompare(a.date));
 
   $("modalTitle").textContent = `📋 سجل الحصص والامتحانات: ${st.name}`;
@@ -3508,7 +3761,7 @@ function openStudentAttendanceHistoryCard(studentId) {
     <!-- الشريط العلوي: إحصائيات الحصص والامتحانات -->
     <div style="margin-bottom:14px;background:#f8fafc;padding:12px;border-radius:10px;border:1px solid #cbd5e1;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px">
       <div>الصف: <b>${esc(st.grade)}</b></div>
-      <div>كود الطالب: <b>#${esc(st.studentNo || st.id.slice(0, 5))}</b></div>
+      <div>كود الطالب: <b>#${esc(st.studentNo || String(st.id).slice(0, 5))}</b></div>
       <div>إجمالي الحصص المسجلة: <b style="color:#0284c7">${stAttLogs.length} حصة</b></div>
       <div>إجمالي الامتحانات: <b style="color:#d97706">${stExamLogs.length} امتحان</b></div>
     </div>
@@ -3570,10 +3823,15 @@ function openStudentAttendanceHistoryCard(studentId) {
               let score = Number(ex.score || 0);
               let badgeColor = score >= 85 ? '#059669' : (score >= 65 ? '#d97706' : '#dc2626');
               let ratingText = score >= 85 ? 'ممتاز 🌟' : (score >= 65 ? 'جيد جداً 👍' : (score >= 50 ? 'مقبول ⚠️' : 'ضعيف ❌'));
+              
+              // الربط الذكي لاستخراج اسم الامتحان مع تحويل المعرفات صراحة لنصوص لضمان المطابقة
+              let titleFromExams = ex.examId ? ((data.exams || []).find(e => String(e.id) === String(ex.examId))?.title || (data.exams || []).find(e => String(e.id) === String(ex.examId))?.name) : null;
+              let examTitle = ex.examTitle || titleFromExams || (ex.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي");
+
               return `
                 <tr>
                   <td><b>${esc(ex.date)}</b></td>
-                  <td><b>${esc(ex.examTitle || (ex.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي"))}</b></td>
+                  <td><b>${esc(examTitle)}</b></td>
                   <td><b style="font-size:16px;color:${badgeColor}">${score} / 100</b></td>
                   <td><span class="tag" style="background:#f0fdf4;color:${badgeColor};border:1px solid ${badgeColor}">${ratingText}</span></td>
                   <td>${esc(ex.notes || 'تم التصحيح والتدقيق')}</td>
@@ -3737,27 +3995,81 @@ async function saveDynamicExam(e){
 
 function gradeExamModal(examId){
   playBeep(true);
-  let ex = data.exams.find(x=>x.id === examId);
-  let targetStudents = ex.examType === 'student' ? data.students.filter(s => s.id === ex.studentId) : data.students.filter(s => s.grade === ex.gradeFilter);
+  
+  // 1️⃣ البحث عن الامتحان مع تحويل المعرف لنص لمنع أي خطأ في النوع
+  let ex = data.exams.find(x => String(x.id) === String(examId));
+  if (!ex) {
+    toast("⚠️ تعذر العثور على بيانات الامتحان");
+    return;
+  }
+
+  // 2️⃣ جلب الطلاب بدقة سواء كان الامتحان فردياً لطالب محدد أو جماعياً لصف/مرحلة
+  let targetStudents = [];
+  if (ex.examType === 'student' && ex.studentId) {
+    // امتحان فردي
+    targetStudents = data.students.filter(s => String(s.id) === String(ex.studentId));
+  } else {
+    // امتحان جماعي (صف دراسي / مرحلة / مجموعة)
+    targetStudents = data.students.filter(s => {
+      let matchGrade = ex.gradeFilter ? s.grade === ex.gradeFilter : true;
+      let matchStage = ex.stage ? s.stage === ex.stage : true;
+      
+      // فحص انضمام الطالب للمجموعة إن كان الامتحان مخصصاً لمجموعة
+      let matchGroup = true;
+      if (ex.groupId) {
+        let groupSet = s.groupsSetup || (s.groupId ? [{groupId: s.groupId}] : []);
+        matchGroup = groupSet.some(gs => String(gs.groupId) === String(ex.groupId));
+      }
+
+      return matchGrade && matchStage && matchGroup;
+    });
+  }
+
   let isLocked = !!ex.isLocked;
 
   $("modalTitle").textContent = `رصد درجات امتحان: ${ex.title} ${isLocked ? '(مغلق 🔒)' : ''}`;
   $("modalBody").innerHTML = `
     ${isLocked ? `<div style="background:#fff1f2;color:#be123c;padding:10px;border-radius:8px;margin-bottom:12px;font-weight:bold">🔒 هذا الامتحان مغلق تماماً ودرجاته للعرض فقط.</div>` : ''}
+    
+    <div style="margin-bottom:10px;font-size:12px;color:#64748b;display:flex;justify-content:space-between;align-items:center">
+      <span>نوع الامتحان: <b>${ex.examType === 'student' ? '👤 طالب فردي' : '📚 امتحان جماعي'}</b></span>
+      <span>عدد الطلاب المستهدفين: <b>${targetStudents.length} طالب</b></span>
+    </div>
+
     <div class="table-wrap"><table>
-      <tr><th>اسم الطالب</th><th>الدرجة من 100</th><th>إجراء الرصد</th></tr>
-      ${targetStudents.length === 0 ? `<tr><td colspan="3" style="text-align:center;color:#718096">لا يوجد طلاب مسجلين حالياً</td></tr>` :
-        targetStudents.map(st=> {
-          let existingAtt = data.attendance.find(a => a.studentId === st.id && a.examId === examId);
-          let scoreVal = existingAtt ? existingAtt.score : "";
-          return `<tr>
-            <td><b>${esc(st.name)}</b></td>
-            <td><input type="number" id="grade_val_${st.id}" value="${scoreVal}" ${isLocked?'readonly disabled':''} placeholder="مثال: 95" style="width:100px;padding:6px;border:1px solid #cbd5e1;border-radius:6px"></td>
-            <td>
-              ${!isLocked ? `<button class="small success" onclick="saveStudentExamGrade('${examId}','${st.id}','${esc(st.name)}')">💾 حفظ الدرجة المزامنة</button>` : '<span class="tag">محفوظ 🔒</span>'}
-            </td>
-          </tr>`;
-        }).join("")}
+      <thead>
+        <tr style="background:#f1f5f9">
+          <th>اسم الطالب</th>
+          <th>الصف / المرحلة</th>
+          <th>الدرجة من 100</th>
+          <th>إجراء الرصد المباشر</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${targetStudents.length === 0 ? `<tr><td colspan="4" style="text-align:center;color:#718096;padding:16px">لا يوجد طلاب مسجلين مطبقين لشروط هذا الامتحان حالياً</td></tr>` :
+          targetStudents.map(st => {
+            // البحث الدقيق عن الدرجة السابقة سواء من سجل الحضور أو من كائن الامتحان المحفوظ
+            let existingAtt = data.attendance.find(a => String(a.studentId) === String(st.id) && String(a.examId) === String(examId));
+            
+            let scoreVal = "";
+            if (existingAtt && existingAtt.score !== undefined) {
+              scoreVal = existingAtt.score;
+            } else if (ex.scores && ex.scores[st.id] !== undefined) {
+              scoreVal = ex.scores[st.id];
+            }
+
+            return `<tr>
+              <td><b>${esc(st.name)}</b></td>
+              <td><span class="tag" style="background:#e0f2fe;color:#0369a1">${esc(st.grade)}</span></td>
+              <td>
+                <input type="number" id="grade_val_${st.id}" value="${scoreVal !== undefined ? scoreVal : ''}" ${isLocked ? 'readonly disabled' : ''} placeholder="مثال: 95" style="width:100px;padding:6px;border:1px solid #cbd5e1;border-radius:6px">
+              </td>
+              <td>
+                ${!isLocked ? `<button class="small success" onclick="saveStudentExamGrade('${examId}','${st.id}','${esc(st.name)}')">💾 حفظ الدرجة المزامنة</button>` : '<span class="tag">محفوظ 🔒</span>'}
+              </td>
+            </tr>`;
+          }).join("")}
+      </tbody>
     </table></div>
     
     ${!isLocked ? `
@@ -3766,31 +4078,83 @@ function gradeExamModal(examId){
       </div>
     ` : ''}
   `;
+  
   openModal();
 }
 
 async function saveStudentExamGrade(examId, studentId, studentName){
-  let val = Number($("grade_val_"+studentId).value);
-  if(isNaN(val)){ toast("أدخل الدرجة بشكل صحيح أولاً"); return; }
+  let scoreInput = $("grade_val_" + studentId);
+  if (!scoreInput || scoreInput.value.trim() === "") {
+    toast("⚠️ أدخل الدرجة بشكل صحيح أولاً");
+    return;
+  }
+
+  let val = Number(scoreInput.value);
+  if (isNaN(val)) { toast("أدخل الدرجة بشكل صحيح أولاً"); return; }
+  
   let examPoints = Math.round(val / 2);
 
-  let st = data.students.find(s => s.id === studentId);
+  // 🔍 تحويل المعرفات صراحة لنصوص لضمان التوافق التام ومنع مشاكل التقييم عند اختلاف الأنواع (String / Number)
+  let st = (data.students || []).find(s => String(s.id) === String(studentId));
+  let ex = (data.exams || []).find(x => String(x.id) === String(examId));
+  let examTitle = ex ? (ex.title || ex.name) : "اختبار تقييمي";
 
-  await col("attendance").add({ studentId, studentName, date:nowDate(), status:"حضر الامتحان", score:val, examId, pointsGained: examPoints, teacherId:user.uid });
-  await col("rewards").add({ studentId, studentName, points: examPoints, title: `درجة اختبار موزونة (${val}/100)`, date: nowDate(), teacherId: user.uid });
+  // 1️⃣ حفظ/تحديث الدرجة داخل كائن الامتحان نفسه (data.exams) لدعم الامتحانات الجماعية في Firestore
+  if (ex) {
+    let updatedScores = ex.scores || {};
+    updatedScores[String(studentId)] = val;
+    await col("exams").doc(String(examId)).set({ scores: updatedScores }, { merge: true });
+  }
+
+  // 2️⃣ فحص مرن يضمن التوافق في نوع البيانات لمنع تكرار السجلات وتحديث السجل السابق إن وجد في الحضور
+  let existingAtt = (data.attendance || []).find(a => 
+    String(a.studentId) === String(studentId) && 
+    String(a.examId) === String(examId)
+  );
+
+  let recordData = {
+    studentId: String(studentId),
+    studentName: studentName,
+    date: nowDate(),
+    status: "حضر الامتحان",
+    score: val,
+    examId: String(examId),
+    examTitle: examTitle,
+    notes: `درجة اختبار (${examTitle}): ${val} / 100`,
+    pointsGained: examPoints,
+    teacherId: user.uid
+  };
+
+  if (existingAtt && existingAtt.id) {
+    await col("attendance").doc(existingAtt.id).set(recordData, { merge: true });
+  } else {
+    await col("attendance").add(recordData);
+  }
+
+  // 3️⃣ إضافة نقاط التفوق لرصيد الكرت الذهبي
+  await col("rewards").add({ 
+    studentId: String(studentId), 
+    studentName: studentName, 
+    points: examPoints, 
+    title: `درجة اختبار موزونة: ${examTitle} (${val}/100)`, 
+    date: nowDate(), 
+    teacherId: user.uid 
+  });
 
   let rankInGroup = "الأول على المجموعة";
-  let waMsg = `*📱 تقرير نتيجة اختبار مادة آلي - Mr. Abdelhamed Ahmed System*\n\n` +
+  let waMsg = `*📱 تقرير نتيجة اختبار مادة آلي - Future Minds Academy*\n\n` +
               `• الطالب: ${studentName}\n` +
+              `• الاختبار: ${examTitle}\n` +
               `• درجة الاختبار: ${val} / 100\n` +
               `• الترتيب التقريبي: ${rankInGroup}\n` +
               `• إضافة نقاط التفوق لرصيد الكرت الذهبي: +${examPoints} نقطة 🌟\n\n` +
               `_تم تحديث ملف الطالب Profile المباشر تلقائياً._`;
 
-  await loadAll(); playBeep(true); 
-  
+  await loadAll(); 
+  playBeep(true); 
+
   if (st && st.phone) {
-    let confirmWa = confirm(`✅ تم رصد الدرجة وإضافة (${examPoints}) نقاط بالكرت الذهبي! هل تريد فتح WhatsApp لإرسال مسودة الرسالة المخصصة لولي الأمر؟`);
+    let confirmWa = confirm(`✅ تم رصد الدرجة (${val}/100) وإضافة (${examPoints}) نقاط بالكرت الذهبي! هل تريد فتح WhatsApp لإرسال مسودة الرسالة المخصصة لولي الأمر؟`);
     if (confirmWa) {
       window.open(`https://wa.me/${st.phone}?text=${encodeURIComponent(waMsg)}`, '_blank');
     }
@@ -4899,7 +5263,7 @@ setInterval(()=>{
   checkScheduleForNotifications();
 },1000);
 
-// فحص ما إذا كان الزائر ولي أمر دخل عبر رابط مباشر
+// فحص ما إذا كان الزائر ولي أمر دخل عبر رابط مباشر مع جلب الامتحانات الشاملة
 async function checkParentPortalView() {
   const urlParams = new URLSearchParams(window.location.search);
   const studentId = urlParams.get('portalStudentId');
@@ -4912,7 +5276,7 @@ async function checkParentPortalView() {
     const portalScreen = $("parentPortalScreen");
     if (portalScreen) portalScreen.classList.remove("hidden");
 
-    $("parentPortalContent").innerHTML = `<div style="text-align:center; padding:40px; font-weight:bold;">⏳ جاري تحميل تقرير الطالب...</div>`;
+    $("parentPortalContent").innerHTML = `<div style="text-align:center; padding:40px; font-weight:bold;">⏳ جاري تحميل تقرير الطالب الشامل واستدعاء الامتحانات...</div>`;
 
     try {
       const studentDoc = await db.collection("students").doc(studentId).get();
@@ -4923,11 +5287,14 @@ async function checkParentPortalView() {
 
       const stData = { id: studentDoc.id, ...studentDoc.data() };
 
-      const [groupsSnap, attSnap, paysSnap, rewardsSnap] = await Promise.all([
+      // 📥 استدعاء مجموعات الامتحانات والتقييمات الإلكترونية بجانب الحضور والماليات
+      const [groupsSnap, attSnap, paysSnap, rewardsSnap, examsSnap, onlineQuizzesSnap] = await Promise.all([
         db.collection("groups").get(),
         db.collection("attendance").where("studentId", "==", studentId).get(),
         db.collection("payments").where("studentId", "==", studentId).get(),
-        db.collection("rewards").where("studentId", "==", studentId).get()
+        db.collection("rewards").where("studentId", "==", studentId).get(),
+        db.collection("exams").get(),
+        db.collection("onlineQuizzes").get()
       ]);
 
       data.students = [stData];
@@ -4935,6 +5302,8 @@ async function checkParentPortalView() {
       data.attendance = attSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       data.payments = paysSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       data.rewards = rewardsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.exams = examsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.onlineQuizzes = onlineQuizzesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
       renderStudentProfileView("parentPortalContent", studentId);
 
@@ -4958,6 +5327,7 @@ async function checkParentPortalView() {
   }
   return false;
 }
+
 auth.onAuthStateChanged(async u=>{
   const isParent = await checkParentPortalView();
   if (isParent) return;
@@ -4990,6 +5360,7 @@ auth.onAuthStateChanged(async u=>{
   initPushNotifications();
   await loadAll();
 });
+
 // 💸 دالة الإدارة المالية المتقدمة، بطاقات الأيام، والتعديل/الحذف
 window.selectedExpensesMonth = new Date().toISOString().slice(0, 7); // الشهر الحالي YYYY-MM
 
