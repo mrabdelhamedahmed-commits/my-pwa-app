@@ -472,7 +472,7 @@ function checkScheduleForNotifications(){
 }
 
 function getStudentCycleInfo(studentId){
-  let st = data.students.find(s => s.id === studentId);
+  let st = (data.students || []).find(s => String(s.id) === String(studentId));
   if(!st) return { 
     currentCycle: 1, totalAttended: 0, currentCycleAttended: 0, debt: 0, isDue: false,
     payType: "بالشهر", fullPrice: 0, totalPaid: 0, totalLessons: 0, presentCount: 0,
@@ -480,8 +480,8 @@ function getStudentCycleInfo(studentId){
     examsHistory: [], groupsBreakdown: []
   };
 
-  // 1️⃣ جلب جميع سجلات الطالب وتصنيفها
-  let allStudentAtt = data.attendance.filter(a => a.studentId === studentId);
+  // 1️⃣ جلب جميع سجلات الطالب وتصنيفها مع توحيد المعرفات كنصوص (String)
+  let allStudentAtt = (data.attendance || []).filter(a => String(a.studentId) === String(studentId));
 
   let stLessons = allStudentAtt.filter(a => 
     !a.examId && a.status !== "حضر الامتحان" && a.status !== "اختبار إلكتروني" && a.score === undefined
@@ -513,10 +513,10 @@ function getStudentCycleInfo(studentId){
   let hwDoneCount = stLessons.filter(a => a.homework && a.homework.includes("تم")).length;
   let totalExams = stExams.length;
 
-  let stRewards = (data.rewards || []).filter(r => r.studentId === studentId);
+  let stRewards = (data.rewards || []).filter(r => String(r.studentId) === String(studentId));
   let goldenPoints = stRewards.reduce((acc, r) => acc + Number(r.points || 0), 0);
 
-  let stPays = data.payments.filter(p => p.studentId === studentId);
+  let stPays = (data.payments || []).filter(p => String(p.studentId) === String(studentId));
   let totalPaid = stPays.reduce((acc, p) => acc + Number(p.amount || 0), 0);
 
   // 2️⃣ حساب المجموعات المتعددة ودعم المبالغ والحصص القديمة العائمة
@@ -526,26 +526,29 @@ function getStudentCycleInfo(studentId){
 
   if (groupsSetup.length > 0) {
     // أ) تجميع المدفوعات العامة/القديمة (التي بدون groupId أو المحددة بـ "all")
-    let unassignedPaid = stPays.filter(p => !p.groupId || p.groupId === "all")
+    let unassignedPaid = stPays.filter(p => !p.groupId || String(p.groupId) === "all")
                                .reduce((acc, p) => acc + Number(p.amount || 0), 0);
 
     let assignedLessonIds = new Set();
 
     // ب) حساب الحصص والتحصيلات المباشرة الخاصة بكل مجموعة
     let rawBreakdown = groupsSetup.map(gs => {
-      let gObj = data.groups.find(g => g.id === gs.groupId);
+      let gObj = (data.groups || []).find(g => String(g.id) === String(gs.groupId));
       let gName = gObj ? gObj.name : "مجموعة مجدولة";
       let gPayType = gs.payType || "بالشهر";
       let gPrice = Number(gs.price || 0);
 
-      // الحصص المربوطة بالمجموعة صراحة عبر groupId أو اسم المجموعة بالرمز
+      // الحصص المربوطة بالمجموعة صراحة عبر groupId أو اسم المجموعة
       let directLessons = stAtt.filter(a => {
-        let isDirect = a.groupId === gs.groupId || (a.notes && a.notes.includes(gName));
-        if (isDirect) assignedLessonIds.add(a.id || (a.date + "_" + a.studentId + "_" + (a.notes || "")));
+        let isDirect = (a.groupId && String(a.groupId) === String(gs.groupId)) || (a.notes && a.notes.includes(gName));
+        if (isDirect) {
+          let lKey = a.id || (a.date + "_" + a.studentId + "_" + (a.notes || ""));
+          assignedLessonIds.add(lKey);
+        }
         return isDirect;
       });
 
-      let directPaid = stPays.filter(p => p.groupId === gs.groupId)
+      let directPaid = stPays.filter(p => p.groupId && String(p.groupId) === String(gs.groupId))
                              .reduce((acc, p) => acc + Number(p.amount || 0), 0);
 
       return {
@@ -559,47 +562,59 @@ function getStudentCycleInfo(studentId){
       };
     });
 
-    // ج) المعالجة الكلية للحصص القديمة العائمة وإسنادها للمجموعات ليتطابق المجموع مع totalAttended
-    let unassignedLessonsCount = stAtt.filter(a => !assignedLessonIds.has(a.id || (a.date + "_" + a.studentId + "_" + (a.notes || ""))) && !a.groupId).length;
+    // ج) ضم كافة الحصص القديمة العائمة غير المربوطة بـ groupId للمجموعة الأولى ليتطابق المجموع الكلي
+    let unassignedLessonsCount = stAtt.filter(a => {
+      let lKey = a.id || (a.date + "_" + a.studentId + "_" + (a.notes || ""));
+      return !assignedLessonIds.has(lKey) && !a.groupId;
+    }).length;
 
-    let remainingUnassignedLessons = unassignedLessonsCount;
+    if (rawBreakdown.length > 0 && unassignedLessonsCount > 0) {
+      rawBreakdown[0].attended += unassignedLessonsCount;
+    }
+
+    // د) المعالجة الدقيقة للحساب المتوقع والديون (بالشهر مقابل بالحصة)
     rawBreakdown.forEach(gb => {
-      if (remainingUnassignedLessons > 0) {
-        gb.attended += 1;
-        remainingUnassignedLessons -= 1;
-      }
-
+      let isMonthly = gb.payType && gb.payType.includes("شهر");
       let gCycle = Math.floor(gb.attended / 4) + 1;
       let gCycleAttended = gb.attended % 4;
-      let expected = (gb.payType === "بالشهر") ? (gCycle * gb.price) : (gb.attended * gb.price);
+
+      let expected = isMonthly ? ((Math.ceil(gb.attended / 4) || 1) * gb.price) : (gb.attended * gb.price);
 
       gb.cycle = gCycle;
       gb.cycleAttended = gCycleAttended;
       gb.expected = expected;
     });
 
-    // د) توزيع رصيد المبالغ القديمة/العامة (unassignedPaid) لتغطية مديونيات المجموعات
+    // هـ) توزيع رصيد المبالغ القديمة/العامة (unassignedPaid) لتغطية مديونيات المجموعات
     let remainingUnassignedPaid = unassignedPaid;
     rawBreakdown.forEach(gb => {
       let needed = Math.max(0, gb.expected - gb.directPaid);
       let cover = Math.min(needed, remainingUnassignedPaid);
       gb.allocatedPaid += cover;
       remainingUnassignedPaid -= cover;
-      gb.debt = Math.max(0, gb.expected - gb.allocatedPaid);
     });
 
-    // هـ) بناء المصفوفة النهائية للعرض بنفس البنية
-    groupsBreakdown = rawBreakdown.map(gb => ({
-      groupId: gb.groupId,
-      groupName: gb.groupName,
-      payType: gb.payType,
-      price: gb.price,
-      attended: gb.attended,
-      cycle: gb.cycle,
-      cycleAttended: gb.cycleAttended,
-      paid: gb.allocatedPaid,
-      debt: gb.debt
-    }));
+    // 🎯 إضافة الرصيد العائم المتبقي إلى المجموعة الأولى بدلاً من قصه، ليتطابق المبلغ المسدد مع 120 ج.م بالكامل
+    if (remainingUnassignedPaid > 0 && rawBreakdown.length > 0) {
+      rawBreakdown[0].allocatedPaid += remainingUnassignedPaid;
+      remainingUnassignedPaid = 0;
+    }
+
+    // و) بناء المصفوفة النهائية للعرض وحساب الديون المتبقية
+    groupsBreakdown = rawBreakdown.map(gb => {
+      let debt = Math.max(0, gb.expected - gb.allocatedPaid);
+      return {
+        groupId: gb.groupId,
+        groupName: gb.groupName,
+        payType: gb.payType,
+        price: gb.price,
+        attended: gb.attended,
+        cycle: gb.cycle,
+        cycleAttended: gb.cycleAttended,
+        paid: gb.allocatedPaid,
+        debt: debt
+      };
+    });
 
     overallDebt = groupsBreakdown.reduce((acc, g) => acc + g.debt, 0);
 
@@ -611,13 +626,9 @@ function getStudentCycleInfo(studentId){
     let currentCycle = Math.floor(totalAttended / 4) + 1;
     let currentCycleAttended = totalAttended % 4;
 
-    if (payType === "بالشهر") {
-      let expected = currentCycle * fullPrice;
-      overallDebt = Math.max(0, expected - totalPaid);
-    } else {
-      let expected = totalAttended * fullPrice;
-      overallDebt = Math.max(0, expected - totalPaid);
-    }
+    let isMonthly = payType && payType.includes("شهر");
+    let expected = isMonthly ? ((Math.ceil(totalAttended / 4) || 1) * fullPrice) : (totalAttended * fullPrice);
+    overallDebt = Math.max(0, expected - totalPaid);
 
     groupsBreakdown.push({
       groupId: null,
@@ -677,42 +688,73 @@ function stopCamera(){
 }
 
 async function loadAll(){
-  if(!user)return;
+  if(!user) return;
   try{
-    // إضافة completedSessions لقائمة المجموعات المحملة سحابياً
-    const ns=['students', 'groups', 'payments', 'schoolSalaries', 'extraIncome', 'expenses', 'liabilities', 'lessons', 'attendance', 'exams', 'questionBank', 'makeups', 'rewards', 'materials', 'schoolSchedule', 'schoolSettings', 'dayCancellations', 'onlineQuizzes', 'completedSessions'];
-    const res=await Promise.all(ns.map(n=>col(n).where("teacherId","==",user.uid).get()));
-    ns.forEach((n,i)=>data[n]=res[i].docs.map(d=>({id:d.id,...d.data()})));
+    // 1️⃣ قراءة كافة المجموعات السحابية بما فيها completedSessions
+    const ns = ['students', 'groups', 'payments', 'schoolSalaries', 'extraIncome', 'expenses', 'liabilities', 'lessons', 'attendance', 'exams', 'questionBank', 'makeups', 'rewards', 'materials', 'schoolSchedule', 'schoolSettings', 'dayCancellations', 'onlineQuizzes', 'completedSessions'];
+    const res = await Promise.all(ns.map(n => col(n).where("teacherId", "==", user.uid).get()));
+    ns.forEach((n, i) => data[n] = res[i].docs.map(d => ({ id: d.id, ...d.data() })));
     
+    // 2️⃣ استرجاع مذكرات الواجبات من localStorage
     let localHw = localStorage.getItem("hw_reminders_" + user.uid);
     if(localHw) data.homeworkReminders = JSON.parse(localHw);
 
-    // دمج الحصص المغلقة من localStorage ومن Firestore لليوم الحالي
+    // 3️⃣ تجميع وتوحيد الحصص المغلقة اليوم محلياً وسحابياً
     data.completedSessionsToday = {};
+    
+    // أ) القراءة من LocalStorage
     let localCompleted = localStorage.getItem("completed_sessions_" + nowDate() + "_" + user.uid);
     if(localCompleted) {
-      try { data.completedSessionsToday = JSON.parse(localCompleted); } catch(e){}
+      try { 
+        let parsed = JSON.parse(localCompleted); 
+        Object.assign(data.completedSessionsToday, parsed);
+      } catch(e){}
     }
 
-    // دمج السجلات القادمة سحابياً من Firestore لمنع فتح الحصة من أي جهاز آخر
+    // ب) الدمج مع البيانات السحابية القادمة من Firestore لليوم الحالي
     if(Array.isArray(data.completedSessions)) {
       data.completedSessions.forEach(cs => {
-        if(cs.date === nowDate() && cs.sessionKey) {
-          data.completedSessionsToday[cs.sessionKey] = true;
+        if(cs.date === nowDate() || cs.date === undefined) {
+          let key = cs.sessionKey || cs.id;
+          if(key) data.completedSessionsToday[key] = true;
         }
       });
     }
 
+    // 4️⃣ تحديث حالة الحصص في data.sessions تلقائياً لمنع ظهور المنتهية في أي قائمة عبر الشاشات
+    if (Array.isArray(data.sessions)) {
+      data.sessions.forEach(s => {
+        let sKey = s.id || s.key || s.sessionKey;
+        if (data.completedSessionsToday[sKey]) {
+          s.isEnded = true;
+          s.status = "completed";
+        }
+      });
+    }
+
+    // 5️⃣ تحديث شريط حالة الاتصال والـ Header
     let isOnline = navigator.onLine;
-    $("syncStatus").innerHTML = isOnline 
-      ? '<span class="sync-pulse"></span> متصل بالسيرفر السحابي — Mr. Abdelhamed Ahmed System AI'
-      : '<span class="sync-pulse" style="background:#f59e0b"></span> يعمل أوفلاين (سيتم الحفظ والمزامنة الخلفية تلقائياً عند عودة الشبكة)';
+    if($("syncStatus")){
+      $("syncStatus").innerHTML = isOnline 
+        ? '<span class="sync-pulse"></span> متصل بالسيرفر السحابي — Mr. Abdelhamed Ahmed System AI'
+        : '<span class="sync-pulse" style="background:#f59e0b"></span> يعمل أوفلاين (سيتم الحفظ والمزامنة الخلفية تلقائياً عند عودة الشبكة)';
+    }
     
     let teacherPhoto = user?.photoURL || localStorage.getItem("teacherPhoto") || DEFAULT_AVATAR;
-    if($("headerLogo")){ $("headerLogo").src = teacherPhoto; $("headerLogo").classList.remove("hidden"); }
+    if($("headerLogo")){ 
+      $("headerLogo").src = teacherPhoto; 
+      $("headerLogo").classList.remove("hidden"); 
+    }
+
+    // 6️⃣ إعادة رسم الواجهة بالبيانات المحدثة
     render();
+
   }catch(e){ 
-    if($("syncStatus")) $("syncStatus").innerHTML = '<span class="sync-pulse" style="background:#f59e0b"></span> يعمل أوفلاين (البيانات محفوظة محلياً)';
+    console.error("خطأ أثناء تحميل البيانات:", e);
+    if($("syncStatus")) {
+      $("syncStatus").innerHTML = '<span class="sync-pulse" style="background:#f59e0b"></span> يعمل أوفلاين (البيانات محفوظة محلياً)';
+    }
+    render();
   }
 }
 
@@ -889,7 +931,15 @@ function dashboard(c){
       groupedTodayMap[key].studentsCount++;
     }
   });
-  let todayLessons = Object.values(groupedTodayMap).sort((a,b) => (a.startTime || "").localeCompare(b.startTime || ""));
+
+  // 🎯 التعديل الرئيسي: تصفية واستبعاد الحصص المغلقة اليوم فوراً من العرض (لاب / موبايل)
+  let allTodayLessons = Object.values(groupedTodayMap).sort((a,b) => (a.startTime || "").localeCompare(b.startTime || ""));
+  let todayLessons = allTodayLessons.filter(l => {
+    let sessionKey = l.startTime + "_" + l.studentName;
+    let sIdKey = l.id || l.key;
+    let isCompleted = (data.completedSessionsToday && (data.completedSessionsToday[sessionKey] || data.completedSessionsToday[sIdKey])) || l.isEnded || l.status === "completed";
+    return !isCompleted; // إرجاع الحصص النشطة القادمة فقط وإخفاء المنتهية
+  });
 
   let studentAiWarnings = [];
   let overdueStudents = [];
@@ -947,7 +997,7 @@ function dashboard(c){
   <div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#111827,#1f2937);color:#fff;border-right:6px solid #f59e0b">
     <h3 style="margin:0 0 10px;color:#f59e0b">☀️ الملخص اليومي السريع (${weekDays.find(w=>w.key===todayDay).name} - ${nowDate()})</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;font-size:13px">
-      <div>📅 عدد حصص اليوم المجدولة: <b>${todayLessons.length} حصص</b></div>
+      <div>📅 عدد الحصص القادمة المتبقية: <b>${todayLessons.length} حصص</b></div>
       <div>💰 إجمالي الديون/المستحقات للتحصيل: <b style="color:#f87171">${todayDueTotal} ج.م</b></div>
       <div>🚨 طلاب تحت الإنذار الأكاديمي (علامة حمراء): <b style="color:#fbbf24">${studentAiWarnings.length} طلاب</b></div>
     </div>
@@ -1030,25 +1080,18 @@ function dashboard(c){
         <tr style="background:#f1f5f9"><th>التوقيت</th><th>اسم الحصة / المجموعة</th><th>عدد الطلاب</th><th>الصف</th><th>حالة الحصة</th><th>إجراء سريع</th></tr>
         ${isTodayCancelled ? `<tr><td colspan="6" style="text-align:center;color:#b45309;padding:14px">⚠️ حصص اليوم معلقة بسبب تسجيل عذر طارئ</td></tr>` :
           (todayLessons.length === 0 ? 
-            `<tr><td colspan="6" style="text-align:center;color:#718096;padding:14px">🎉 لا توجد حصص مجدولة لهذا اليوم الفعلي</td></tr>` :
-            todayLessons.map((l, idx) => {
+            `<tr><td colspan="6" style="text-align:center;color:#059669;padding:14px;font-weight:bold">🎉 لا توجد حصص متبقية اليوم (تم إنهاء الحصص أو لا توجد حصص مجدولة)</td></tr>` :
+            todayLessons.map((l) => {
               let sessionKey = l.startTime + "_" + l.studentName;
-              let isCompleted = !!data.completedSessionsToday[sessionKey];
               return `
               <tr>
                 <td><span class="tag" style="background:#e0f2fe;color:#0369a1">⏰ ${l.startTime} ⬅️ ${l.endTime}</span></td>
                 <td><b>${esc(l.studentName)}</b></td>
                 <td><span class="tag success">👥 ${l.studentsCount} طلاب</span></td>
                 <td>${esc(l.grade)}</td>
+                <td><span class="tag warning">في الانتظار ⏳</span></td>
                 <td>
-                  ${isCompleted ? '<span class="tag danger">تمت وإنهاؤها اليوم 🔒</span>' : '<span class="tag warning">في الانتظار ⏳</span>'}
-                </td>
-                <td>
-                  ${!isCompleted ? `
-                    <button class="small success" onclick="redirectToLiveAndStart('${sessionKey}', '${l.startTime}', '${esc(l.studentName)}')">🚀 بدء الحصة الآن</button>
-                  ` : `
-                    <button class="small" disabled style="opacity:0.6;cursor:not-allowed">مغلقة اليوم</button>
-                  `}
+                  <button class="small success" onclick="redirectToLiveAndStart('${sessionKey}', '${l.startTime}', '${esc(l.studentName)}')">🚀 بدء الحصة الآن</button>
                 </td>
               </tr>
             `}).join(""))
@@ -2172,7 +2215,16 @@ function liveLessonsPage(c){
     if(!groupedLiveMap[key]) groupedLiveMap[key] = { ...l, studentsCount: 1 };
     else groupedLiveMap[key].studentsCount++;
   });
-  let todayLessons = Object.values(groupedLiveMap).sort((a,b)=>(a.startTime||"").localeCompare(b.startTime||""));
+
+  let allTodayLessons = Object.values(groupedLiveMap).sort((a,b)=>(a.startTime||"").localeCompare(b.startTime||""));
+
+  // 🎯 التعديل الرئيسي: تصفية واستبعاد أي حصة تم إنهاؤها أو إغلاقها اليوم
+  let todayLessons = allTodayLessons.filter(l => {
+    let sessionKey = l.startTime + "_" + l.studentName;
+    let sIdKey = l.id || l.key;
+    let isCompleted = (data.completedSessionsToday && (data.completedSessionsToday[sessionKey] || data.completedSessionsToday[sIdKey])) || l.isEnded || l.status === "completed";
+    return !isCompleted; // عرض الحصص النشطة والقادمة فقط وإخفاء المغلقة
+  });
 
   c.innerHTML=`<section class="section">
     <h3>▶️ الحصص المباشرة والبدء المنفرد المستقل والمذكرات</h3>
@@ -2186,20 +2238,17 @@ function liveLessonsPage(c){
 
     <div class="table-wrap" style="margin-top:14px"><table>
       <tr><th>وقت الحصة</th><th>اسم المجموعة / الحصة</th><th>عدد الطلاب</th><th>الصف والمكان</th><th>المذكرة المربوطة</th><th>أزرار التحكم التفاعلية</th></tr>
-      ${todayLessons.length === 0 ? `<tr><td colspan="6" style="text-align:center;color:#718096;padding:20px">🎉 لا توجد حصص مجدولة لهذا اليوم الفعلي (${nowDate()})</td></tr>` : 
+      ${todayLessons.length === 0 ? `<tr><td colspan="6" style="text-align:center;color:#059669;padding:20px;font-weight:bold">🎉 لا توجد حصص مباشرة متبقية لهذا اليوم الفعلي (${nowDate()}) (تم إنهاء الحصص أو لا توجد حصص مجدولة)</td></tr>` : 
         todayLessons.map((l, idx)=> {
           let sessionKey = l.startTime + "_" + l.studentName;
-          let activeSess = activeLiveSessions[sessionKey];
+          let activeSess = typeof activeLiveSessions !== "undefined" ? activeLiveSessions[sessionKey] : null;
           let isRunning = !!activeSess;
-          let isCompletedToday = !!data.completedSessionsToday[sessionKey];
-          let savedRem = data.homeworkReminders[sessionKey] || "لا يوجد واجب مسجل سابقاً";
 
-          let matchedMaterial = data.materials.find(m => m.title.includes(l.grade) || m.title.includes(l.studentName));
+          let matchedMaterial = (data.materials || []).find(m => m.title && (m.title.includes(l.grade) || m.title.includes(l.studentName)));
 
           return `<tr>
             <td>
-              <b>${l.startTime} ⬅️ ${l.endTime}</b>
-              ${l.shiftedStartTime ? `<br><span class="tag warning">مرحل: ${l.shiftedStartTime}</span>` : ''}
+              <b>${l.startTime} ⬅️ ${l.endTime}</b>${l.shiftedStartTime ? `<br><span class="tag warning">مرحل: ${l.shiftedStartTime}</span>` : ''}
             </td>
             <td><b>${esc(l.studentName)}</b></td>
             <td><span class="tag success">👥 ${l.studentsCount} طلاب</span></td>
@@ -2208,9 +2257,7 @@ function liveLessonsPage(c){
               ${matchedMaterial ? `<a href="${matchedMaterial.url}" target="_blank" class="small success" style="text-decoration:none">📖 فتح المذكرة بنقرة</a>` : `<span class="muted" style="font-size:11px">لا توجد مذكرة</span>`}
             </td>
             <td>
-              ${isCompletedToday ? `
-                <span class="tag danger" style="padding:6px 12px">🔒 تمت وإنهاؤها اليوم</span>
-              ` : (!isRunning ? `
+              ${!isRunning ? `
                 <div class="actions">
                   <button class="small success" onclick="startIndependentSession('${sessionKey}', '${l.startTime}', '${esc(l.studentName)}')">🚀 بدء الحصة</button>
                   <button class="small warning" onclick="promptDelayLesson('${sessionKey}', '${l.startTime}', '${esc(l.studentName)}')">⏱️ تأخير</button>
@@ -2219,11 +2266,11 @@ function liveLessonsPage(c){
               ` : `
                 <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                   <span class="timer" style="font-size:16px" id="timer_display_${idx}">
-  ${activeSess ? formatSeconds(activeSess.seconds) : "00:00:00"}
-</span>
+                    ${activeSess ? formatSeconds(activeSess.seconds) : "00:00:00"}
+                  </span>
                   <button class="small danger" onclick="finishIndependentSession('${sessionKey}', '${esc(l.studentName)}')">⏹️ إنهاء وتوثيق</button>
                 </div>
-              `)}
+              `}
             </td>
           </tr>`;
         }).join("")}
@@ -2500,13 +2547,6 @@ function sendSeparateSessionReport(stId, stName, phone) {
   `;
 }
 
-async function downloadLessonReportImage(){
-  let canvas = await html2canvas($("captureLessonReport"), {scale: 2, backgroundColor: "#fff"});
-  let a = document.createElement("a"); a.download = "Lesson-Report.png"; a.href = canvas.toDataURL("image/png"); a.click();
-  toast("تم تنزيل تقرير الحصة كصورة بنجاح!");
-}
-/////////////////////////////////////////////new2/////////////////////////////////
-
 async function confirmLockAndCompleteSession(sessionKey, sessionName) {
   // 1. قراءة نص الواجب الجديد المكلف به الطلاب للحصة القادمة
   let nextHw = $("next_homework_input") ? $("next_homework_input").value.trim() : "";
@@ -2572,20 +2612,33 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
     }
   }
 
-  // 4. تعليم الحصة كمكتملة لليوم ومزامنة البيانات محلياً وفي Firestore
+  // 4. تعليم الحصة كمكتملة لليوم محلياً وفي Firestore
+  data.completedSessionsToday = data.completedSessionsToday || {};
   data.completedSessionsToday[sessionKey] = true;
   localStorage.setItem("completed_sessions_" + nowDate() + "_" + user.uid, JSON.stringify(data.completedSessionsToday));
 
-  // 🔒 الربط مع قاعدة البيانات Firestore لمنع إعادة فتح الحصة مطلقاً
+  // 🔒 تسجيل الحصة كـ completed في Firestore لمنع ظهورها على أي جهاز آخر عبر السحابة
   try {
     let docId = `${nowDate()}_${user.uid}_${sessionKey.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     await col("completedSessions").doc(docId).set({
       sessionKey: sessionKey,
       sessionName: sessionName,
       date: nowDate(),
+      status: "completed",
+      isEnded: true,
       teacherId: user.uid,
       completedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+
+    // تحديث مستند الحصة نفسه إن وجد في مجموعات الحصص
+    if (data.sessions && Array.isArray(data.sessions)) {
+      let sessObj = data.sessions.find(s => s.id === sessionKey || s.key === sessionKey);
+      if (sessObj) {
+        sessObj.isEnded = true;
+        sessObj.status = "completed";
+      }
+      await col("sessions").doc(sessionKey).set({ isEnded: true, status: "completed" }, { merge: true }).catch(() => {});
+    }
   } catch (err) {
     console.error("خطأ أثناء تسجيل إغلاق الحصة بـ Firestore:", err);
   }
@@ -2593,6 +2646,11 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
   closeModal();
   await loadAll();
   playBeep(true);
+  
+  // إعادة رسم الشاشات فوراً لإخفاء الحصة من الشاشة الحالية
+  if (typeof renderHomePage === "function") renderHomePage();
+  if (typeof renderLiveSessionsPage === "function") renderLiveSessionsPage();
+
   toast(`تم إغلاق الحصة (${sessionName}) نهائياً اليوم وتسجيل الواجب آلياً لكل طالب ✅`);
 }
 //////////////////////////////////////////////////////////new2
@@ -3281,10 +3339,10 @@ function renderStudentProfileView(containerId, stId){
   // جلب سجل الواجبات وأحدث واجب محدد عبر دالة الاستدعاء الذكية
   let hwData = getStudentHomeworkHistory(s.id);
 
-  // 🔍 1️⃣ محرك التجميع الذكي الشامل للامتحانات والتقييمات من كافة المجموعات
+  // 🔍 1️⃣ محرك التجميع الذكي الشامل للامتحانات والتقييمات بدون تكرار
   let combinedExamsMap = new Map();
 
-  // أ) جلب الامتحانات من جدول الحضور (data.attendance) مع مطابقة النصوص صراحة
+  // أ) جلب الامتحانات من جدول الحضور (data.attendance) وتوحيد المفتاح المرجعي
   (data.attendance || []).forEach(a => {
     if (String(a.studentId) === String(s.id)) {
       let isExamRecord = a.examId || 
@@ -3296,17 +3354,16 @@ function renderStudentProfileView(containerId, stId){
                          (a.homework && (a.homework.includes("امتحان") || a.homework.includes("اختبار")));
       
       if (isExamRecord) {
-        let key = a.id || (a.date + "_" + (a.examId || a.examTitle || "exam"));
+        let key = a.examId ? ("exam_" + String(a.examId)) : ("att_exam_" + String(a.id || (a.date + "_" + (a.examTitle || "exam"))));
         let rawVal = a.score !== undefined ? a.score : (a.degree !== undefined ? a.degree : (a.mark !== undefined ? a.mark : a.pointsGained));
         let scoreVal = rawVal !== undefined && rawVal !== null && !isNaN(Number(rawVal)) ? Number(rawVal) : 0;
         let maxMark = Number(a.totalMark || a.maxScore || a.fullMark || 100);
 
-        // الربط الذكي مع تحويل المعرفات صراحة لنصوص
         let titleFromExams = a.examId ? ((data.exams || []).find(e => String(e.id) === String(a.examId))?.title || (data.exams || []).find(e => String(e.id) === String(a.examId))?.name) : null;
         let finalExamTitle = a.examTitle || titleFromExams || (a.notes?.includes("تصحيح") ? "اختبار مصحح آلياً" : "اختبار تقييمي");
 
         combinedExamsMap.set(key, {
-          id: a.id,
+          id: a.examId || a.id,
           date: a.date || nowDate(),
           examTitle: finalExamTitle,
           score: scoreVal,
@@ -3318,18 +3375,17 @@ function renderStudentProfileView(containerId, stId){
     }
   });
 
-  // ب) جلب الامتحانات المخصصة للطالب فقط من جدول الامتحانات (data.exams)
+  // ب) جلب الامتحانات المخصصة للطالب فقط من جدول الامتحانات (data.exams) وتطبيق مطابقة الدرجة المرصودة
   (data.exams || []).forEach(ex => {
     let title = ex.title || ex.name || "امتحان تقييمي مدمج";
     let date = ex.date || nowDate();
     let maxMark = Number(ex.totalMark || ex.maxScore || ex.fullMark || 100);
-    let key = "exam_doc_" + ex.id;
+    let key = "exam_" + String(ex.id);
 
     let detectedScore = null;
     let detectedNotes = ex.notes || "اختبار مدمج معتمد";
     let detectedDate = date;
 
-    // دالة فحص دقيقة لدرجة هذا الطالب تحديداً داخل الامتحان
     let findInContainer = (container) => {
       if (!container) return null;
       if (Array.isArray(container)) {
@@ -3374,25 +3430,28 @@ function renderStudentProfileView(containerId, stId){
       }
     }
 
-    // 🎯 🔍 التخصيص الدقيق الخاص بالطالب:
     let isDirectForStudent = String(ex.studentId) === String(s.id) || (s.studentNo && String(ex.studentNo || ex.code) === String(s.studentNo));
-    
     let studentGroupIds = (s.groupsSetup || []).map(g => String(g.groupId));
     if (s.groupId) studentGroupIds.push(String(s.groupId));
     let isForStudentGroup = ex.groupId && studentGroupIds.includes(String(ex.groupId));
 
     let hasGradedScore = detectedScore !== null;
+    let existingEntry = combinedExamsMap.get(key);
 
-    // استدعاء الامتحان فقط إذا كان موجه للطالب بعينه أو لمجموعته أو مسجل له درجة
+    // إذا كانت الدرجة مرصودة مسبقاً برقم في الحضور، لا نستبدلها بعبارة "قيد الرصد"
+    if (existingEntry && typeof existingEntry.score === 'number' && !hasGradedScore) {
+      return;
+    }
+
     if (isDirectForStudent || isForStudentGroup || hasGradedScore) {
-      let finalScore = hasGradedScore ? detectedScore : "قيد الرصد ⏳";
+      let finalScore = hasGradedScore ? detectedScore : (existingEntry && typeof existingEntry.score === 'number' ? existingEntry.score : "قيد الرصد ⏳");
       combinedExamsMap.set(key, {
         id: ex.id,
         date: detectedDate,
         examTitle: title,
         score: finalScore,
         totalMark: maxMark,
-        notes: hasGradedScore ? detectedNotes : "امتحان مخصص ومجدول (قيد الرصد)",
+        notes: (hasGradedScore || typeof finalScore === 'number') ? detectedNotes : "امتحان مخصص ومجدول (قيد الرصد)",
         source: "exams_collection"
       });
     }
@@ -3428,7 +3487,7 @@ function renderStudentProfileView(containerId, stId){
     }
   });
 
-  // ترتيب زمني
+  // ترتيب زمني من الأحدث للأقدم
   let stExams = Array.from(combinedExamsMap.values()).sort((a,b) => (b.date || "").localeCompare(a.date || ""));
 
   // 2️⃣ تصفية الحصص التعليمية فقط
@@ -3594,7 +3653,7 @@ function renderStudentProfileView(containerId, stId){
                   </button>
                 </td>
                 <td><b style="color:#d97706">+${att.pointsGained || 0}</b></td>
-                <td><span class="${noteClass}">${icon} ${esc(att.notes || 'لا توجد ملاحظة')}</span></td>
+                <td><span class="${noteClass}">${icon}${esc(att.notes || 'لا توجد ملاحظة')}</span></td>
               </tr>
             `}).join("")}
         </tbody>
@@ -3623,7 +3682,7 @@ function renderStudentProfileView(containerId, stId){
               
               let badgeColor = isPending ? '#d97706' : (percentage >= 85 ? '#059669' : (percentage >= 65 ? '#d97706' : '#dc2626'));
               let ratingText = isPending ? 'في الانتظار ⏳' : (percentage >= 85 ? 'ممتاز 🌟' : (percentage >= 65 ? 'جيد جداً 👍' : (percentage >= 50 ? 'مقبول ⚠️' : 'ضعيف ❌')));
-              let displayRatio = isPending ? `<b style="font-size:15px;color:#d97706">${scoreDisplay}</b>` : `<b style="font-size:16px;color:${badgeColor}">${scoreDisplay} / ${totalMark}</b> <span style="font-size:11px;color:#64748b">(${percentage}%)</span>`;
+              let displayRatio = isPending ? `<b style="font-size:15px;color:#d97706">${scoreDisplay}</b>` : `<b style="font-size:16px;color:${badgeColor}">${scoreDisplay} /${totalMark}</b> <span style="font-size:11px;color:#64748b">(${percentage}%)</span>`;
 
               return `
               <tr>
@@ -3927,8 +3986,8 @@ function examsPage(c){
 
 function examModal(){
   playBeep(true);
-  $("modalTitle").textContent="إنشاء امتحان جديد";
-  $("modalBody").innerHTML=`<form class="form" onsubmit="saveDynamicExam(event)">
+  $("modalTitle").textContent = "إنشاء امتحان جديد";
+  $("modalBody").innerHTML = `<form class="form" onsubmit="saveDynamicExam(event)">
     <label class="full">نوع الامتحان المستهدف: 
       <select id="ex_type" onchange="toggleExamTargetType()">
         <option value="stage">امتحان لمرحلة أو صف دراسي كامل</option>
@@ -3950,11 +4009,15 @@ function examModal(){
     <div id="studentTargetGroup" class="full hidden">
       <label>اختر الطالب المحدد:</label>
       <select id="ex_student">${data.students.map(s=>`<option value="${s.id}">${esc(s.name)} (${esc(s.grade)})</option>`).join("")}</select>
+      <div style="margin-top:10px">
+        <label style="font-weight:bold;color:#047857">درجة الطالب (من 100) - لرصدها فوراً في تقرير ولي الأمر (اختياري):</label>
+        <input type="number" id="ex_student_score" placeholder="مثال: 95 (اتركها فارغة إذا أردت رصدها لاحقاً)" min="0" max="100">
+      </div>
     </div>
 
     <input id="ex_title" placeholder="عنوان الامتحان والمادة" required class="full">
     <input id="ex_date" type="date" value="${nowDate()}" class="full">
-    <button class="primary full" style="margin-top:10px">حفظ الامتحان</button>
+    <button class="primary full" style="margin-top:10px">حفظ الامتحان ورصد الدرجة</button>
   </form>`;
   openModal(); updateExamGradeDropdown();
 }
@@ -3982,15 +4045,70 @@ async function saveDynamicExam(e){
   let type = $("ex_type").value;
   let examData = { examType: type, title: $("ex_title").value.trim(), date: $("ex_date").value, isLocked: false, teacherId: user.uid };
 
+  let initialScore = null;
   if(type === "student"){
-    let stId = $("ex_student").value; let st = data.students.find(x=>x.id === stId);
-    examData.studentId = stId; examData.studentName = st ? st.name : "طالب"; examData.gradeFilter = st ? st.grade : "طالب فردي";
+    let stId = $("ex_student").value; 
+    let st = data.students.find(x => x.id === stId);
+    examData.studentId = stId; 
+    examData.studentName = st ? st.name : "طالب"; 
+    examData.gradeFilter = st ? st.grade : "طالب فردي";
+    
+    let scoreInput = $("ex_student_score") ? $("ex_student_score").value.trim() : "";
+    if (scoreInput !== "") {
+      initialScore = Number(scoreInput);
+      examData.scores = { [stId]: initialScore };
+    }
   } else {
-    examData.stage = $("ex_stage").value; examData.gradeFilter = $("ex_grade").value;
+    examData.stage = $("ex_stage").value; 
+    examData.gradeFilter = $("ex_grade").value;
   }
 
-  await col("exams").add(examData);
-  closeModal(); await loadAll(); playBeep(true); toast("تم حفظ الامتحان بنجاح");
+  let docRef = await col("exams").add(examData);
+
+  // إذا تم إدخال الدرجة فوراً عند الإنشاء لطالب فردي
+  if (type === "student" && initialScore !== null) {
+    let stId = $("ex_student").value;
+    let st = data.students.find(x => x.id === stId);
+    let examPoints = Math.round(initialScore / 2);
+
+    // 1. تسجيل الدرجة في سجل الحضور والامتحانات
+    await col("attendance").add({
+      studentId: String(stId),
+      studentName: st ? st.name : "طالب",
+      date: $("ex_date").value || nowDate(),
+      status: "حضر الامتحان",
+      score: initialScore,
+      examId: String(docRef.id),
+      examTitle: examData.title,
+      notes: `درجة اختبار (${examData.title}): ${initialScore} / 100`,
+      pointsGained: examPoints,
+      teacherId: user.uid
+    });
+
+    // 2. إضافة نقاط التفوق لرصيد الكرت الذهبي
+    await col("rewards").add({ 
+      studentId: String(stId), 
+      studentName: st ? st.name : "طالب", 
+      points: examPoints, 
+      title: `درجة اختبار موزونة: ${examData.title} (${initialScore}/100)`, 
+      date: $("ex_date").value || nowDate(), 
+      teacherId: user.uid 
+    });
+  }
+
+  closeModal(); 
+  await loadAll(); 
+  playBeep(true); 
+
+  // تحديث التقرير فوراً إن كان مفتوحاً
+  if (type === "student" && initialScore !== null) {
+    let stId = $("ex_student").value;
+    if ($("student360Container")) renderStudentProfileView("student360Container", stId);
+    if ($("reportPreview")) renderStudentProfileView("reportPreview", stId);
+    if ($("parentPortalContent")) renderStudentProfileView("parentPortalContent", stId);
+  }
+
+  toast(initialScore !== null ? "تم إنشاء الامتحان ورصد الدرجة فوراً في تقرير الطالب!" : "تم حفظ الامتحان بنجاح");
 }
 
 function gradeExamModal(examId){
@@ -4090,23 +4208,26 @@ async function saveStudentExamGrade(examId, studentId, studentName){
   }
 
   let val = Number(scoreInput.value);
-  if (isNaN(val)) { toast("أدخل الدرجة بشكل صحيح أولاً"); return; }
+  if (isNaN(val) || val < 0) { 
+    toast("⚠️ أدخل درجة صحيحة برقم موجب"); 
+    return; 
+  }
   
   let examPoints = Math.round(val / 2);
 
-  // 🔍 تحويل المعرفات صراحة لنصوص لضمان التوافق التام ومنع مشاكل التقييم عند اختلاف الأنواع (String / Number)
+  // 🔍 تحويل المعرفات صراحة لنصوص لضمان التوافق التام
   let st = (data.students || []).find(s => String(s.id) === String(studentId));
   let ex = (data.exams || []).find(x => String(x.id) === String(examId));
   let examTitle = ex ? (ex.title || ex.name) : "اختبار تقييمي";
 
   // 1️⃣ حفظ/تحديث الدرجة داخل كائن الامتحان نفسه (data.exams) لدعم الامتحانات الجماعية في Firestore
   if (ex) {
-    let updatedScores = ex.scores || {};
-    updatedScores[String(studentId)] = val;
-    await col("exams").doc(String(examId)).set({ scores: updatedScores }, { merge: true });
+    ex.scores = ex.scores || {};
+    ex.scores[String(studentId)] = val;
+    await col("exams").doc(String(examId)).set({ scores: ex.scores }, { merge: true });
   }
 
-  // 2️⃣ فحص مرن يضمن التوافق في نوع البيانات لمنع تكرار السجلات وتحديث السجل السابق إن وجد في الحضور
+  // 2️⃣ فحص مرن يضمن التوافق في نوع البيانات لمنع تكرار السجلات وتحديث السجل السابق إن وجد
   let existingAtt = (data.attendance || []).find(a => 
     String(a.studentId) === String(studentId) && 
     String(a.examId) === String(examId)
@@ -4127,8 +4248,11 @@ async function saveStudentExamGrade(examId, studentId, studentName){
 
   if (existingAtt && existingAtt.id) {
     await col("attendance").doc(existingAtt.id).set(recordData, { merge: true });
+    Object.assign(existingAtt, recordData);
   } else {
-    await col("attendance").add(recordData);
+    let newAtt = await col("attendance").add(recordData);
+    recordData.id = newAtt.id;
+    data.attendance.push(recordData);
   }
 
   // 3️⃣ إضافة نقاط التفوق لرصيد الكرت الذهبي
@@ -4141,6 +4265,18 @@ async function saveStudentExamGrade(examId, studentId, studentName){
     teacherId: user.uid 
   });
 
+  // 4️⃣ مزامنة البيانات السحابية
+  await loadAll(); 
+  playBeep(true); 
+
+  // 🔄 5️⃣ التحديث الفوري المباشر لتقرير ولي الأمر في أي حاوية مفتوحة فوراً ("تسمع على طول")
+  if (typeof renderStudentProfileView === "function") {
+    if ($("student360Container")) renderStudentProfileView("student360Container", studentId);
+    if ($("reportPreview")) renderStudentProfileView("reportPreview", studentId);
+    if ($("parentPortalContent")) renderStudentProfileView("parentPortalContent", studentId);
+  }
+
+  // 6️⃣ تجهيز رسالة WhatsApp
   let rankInGroup = "الأول على المجموعة";
   let waMsg = `*📱 تقرير نتيجة اختبار مادة آلي - Future Minds Academy*\n\n` +
               `• الطالب: ${studentName}\n` +
@@ -4150,16 +4286,13 @@ async function saveStudentExamGrade(examId, studentId, studentName){
               `• إضافة نقاط التفوق لرصيد الكرت الذهبي: +${examPoints} نقطة 🌟\n\n` +
               `_تم تحديث ملف الطالب Profile المباشر تلقائياً._`;
 
-  await loadAll(); 
-  playBeep(true); 
-
   if (st && st.phone) {
-    let confirmWa = confirm(`✅ تم رصد الدرجة (${val}/100) وإضافة (${examPoints}) نقاط بالكرت الذهبي! هل تريد فتح WhatsApp لإرسال مسودة الرسالة المخصصة لولي الأمر؟`);
+    let confirmWa = confirm(`✅ تم رصد الدرجة (${val}/100) وتحديث تقرير ولي الأمر فوراً!\n\nهل تريد فتح WhatsApp لإرسال النتيجة لولي الأمر؟`);
     if (confirmWa) {
       window.open(`https://wa.me/${st.phone}?text=${encodeURIComponent(waMsg)}`, '_blank');
     }
   } else {
-    toast(`تم رصد الدرجة وإضافة نقاط التفوق بالكرت الذهبي بنجاح`);
+    toast(`✅ تم رصد الدرجة (${val}/100) وتحديث تقرير الطالب بنجاح`);
   }
 }
 
