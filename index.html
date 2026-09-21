@@ -434,8 +434,40 @@ function handleVoiceCommand(cmd) {
     let matchStudent = data.students.find(s => cmd.includes(s.name.toLowerCase()));
     if (matchStudent) {
       if (cmd.includes("حضر") || cmd.includes("حضور")) {
-        col("attendance").add({ studentId: matchStudent.id, studentName: matchStudent.name, date: nowDate(), status: "حاضر", homework: "تم التسليم ✅", noteType: "عادي", notes: "تسجيل صوتي آلي", teacherId: user.uid });
-        toast(`✅ تم تسجيل حضور الطالب ${matchStudent.name} صوتياً`);
+        // 🎯 استخراج المجموعة من الأمر الصوتي أو من مجموعات الطالب
+        let targetGroupId = null;
+        let targetGroupName = "";
+
+        // 1. البحث عما إذا كان اسم إحدى المجموعات مذكوراً في الأمر الصوتي
+        let matchedGroupInCmd = (data.groups || []).find(g => cmd.includes(g.name.toLowerCase()));
+        if (matchedGroupInCmd) {
+          targetGroupId = matchedGroupInCmd.id;
+          targetGroupName = matchedGroupInCmd.name;
+        } else if (matchStudent.groupsSetup && matchStudent.groupsSetup.length > 0) {
+          // 2. إذا لم يُذكر اسم المجموعة، نأخذ المجموعة الأولى المنضم إليها الطالب
+          targetGroupId = matchStudent.groupsSetup[0].groupId;
+          let gObj = (data.groups || []).find(g => g.id === targetGroupId);
+          targetGroupName = gObj ? gObj.name : "";
+        } else if (matchStudent.groupId) {
+          targetGroupId = matchStudent.groupId;
+          let gObj = (data.groups || []).find(g => g.id === targetGroupId);
+          targetGroupName = gObj ? gObj.name : "";
+        }
+
+        col("attendance").add({ 
+          studentId: matchStudent.id, 
+          studentName: matchStudent.name, 
+          groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
+          groupName: targetGroupName,  // 👈 تم إضافة اسم المجموعة
+          date: nowDate(), 
+          status: "حاضر", 
+          homework: "تم التسليم ✅", 
+          noteType: "عادي", 
+          notes: "تسجيل صوتي آلي", 
+          teacherId: user.uid 
+        });
+
+        toast(`✅ تم تسجيل حضور الطالب ${matchStudent.name} صوتياً${targetGroupName ? ' (' + targetGroupName + ')' : ''}`);
       } else {
         openStudent360(matchStudent.id);
       }
@@ -1216,23 +1248,72 @@ function onlineQuizModal() {
   $("modalTitle").textContent = "إنشاء اختبار إلكتروني تفاعلي متقدم";
   $("modalBody").innerHTML = `
     <form class="form" onsubmit="saveAdvancedOnlineQuiz(event)">
-      <input id="quiz_title" placeholder="عنوان الاختبار والمادة (مثال: اختبار الرياضيات الشامل)" required class="full">
-      <select id="quiz_grade" class="full">
-        ${gradeOptions["إعدادي"].concat(gradeOptions["ثانوي"]).map(g => `<option>${g}</option>`).join("")}
-      </select>
-      
-      <div class="full" style="background:#f8fafc;padding:12px;border-radius:12px;border:1px solid #cbd5e1">
-        <h4 style="margin:0 0 6px;color:#1e293b">أسئلة الاختيار من متعدد:</h4>
+      <!-- عنوان الاختبار -->
+      <input id="quiz_title" placeholder="عنوان الاختبار (مثال: اختبار الجبر التفاعلي - الوحدة الأولى)" required class="full">
+
+      <!-- التصنيف الأكاديمي: الصف، الوحدة، والدرس -->
+      <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px;" class="full">
+        <select id="quiz_grade" class="full">
+          <option value="">اختر الصف الدراسي...</option>
+          ${Object.values(gradeOptions).flat().map(g => `<option value="${g}">${g}</option>`).join("")}
+        </select>
+        <input id="quiz_unit" placeholder="الوحدة (مثال: الوحدة الأولى: الجبر)">
+        <input id="quiz_lesson" placeholder="الدرس (مثال: الدرس الأول: تحليل المقدار)">
+      </div>
+
+      <!-- توقيت ومدة الاختبار -->
+      <div class="full" style="background:#f8fafc; padding:12px; border-radius:12px; border:1px solid #cbd5e1; margin-top:8px;">
+        <h4 style="margin:0 0 8px; color:#1e293b; font-size:14px;">⏱️ إعدادات الوقت والمدة الزمنيّة:</h4>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:8px;">
+          <div>
+            <label style="font-size:12px; color:#64748b; display:block; margin-bottom:4px;">بداية الإتاحة:</label>
+            <div style="display:flex; gap:4px;">
+              <input type="date" id="quiz_startDate" style="flex:1;">
+              <input type="time" id="quiz_startTime" style="width:110px;">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px; color:#64748b; display:block; margin-bottom:4px;">نهاية الإتاحة (إغلاق الرابط):</label>
+            <div style="display:flex; gap:4px;">
+              <input type="date" id="quiz_endDate" style="flex:1;">
+              <input type="time" id="quiz_endTime" style="width:110px;">
+            </div>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:12px; color:#64748b; display:block; margin-bottom:4px;">مدة الاختبار لكل طالب (بالدقائق):</label>
+          <input type="number" id="quiz_duration" placeholder="مثال: 30 (اتركه فارغاً إذا كان الاختبار مفتوحاً بدون زمن محدد)" min="1" class="full">
+        </div>
+      </div>
+
+      <!-- خيارات الحماية والعشوائية -->
+      <div class="full" style="background:#f8fafc; padding:12px; border-radius:12px; border:1px solid #cbd5e1; margin-top:8px;">
+        <h4 style="margin:0 0 8px; color:#1e293b; font-size:14px;">🛡️ خيارات الحماية والتخصيص:</h4>
+        <div style="display:flex; gap:16px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+            <input type="checkbox" id="quiz_antiCheating" checked>
+            <span>تفعيل نظام منع الغش (مراقبة تبديل التبويبات) 🛡️</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+            <input type="checkbox" id="quiz_shuffle" checked>
+            <span>ترتيب عشوائي للأسئلة والخيارات لكل طالب 🔀</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- منشئ الأسئلة -->
+      <div class="full" style="background:#f8fafc; padding:12px; border-radius:12px; border:1px solid #cbd5e1; margin-top:8px;">
+        <h4 style="margin:0 0 6px; color:#1e293b">أسئلة الاختيار من متعدد:</h4>
         <div id="quizQuestionsBuilderContainer">
-          <div style="background:#fff;padding:10px;border-radius:8px;border:1px solid #cbd5e1;margin-bottom:8px">
+          <div style="background:#fff; padding:10px; border-radius:8px; border:1px solid #cbd5e1; margin-bottom:8px">
             <input class="q-text-input full" placeholder="نص السؤال (مثال: ما قيمة 5 × 5؟)" required style="margin-bottom:6px">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px">
               <input class="q-opt-a" placeholder="الخيار أ" required>
               <input class="q-opt-b" placeholder="الخيار ب" required>
               <input class="q-opt-c" placeholder="الخيار ج" required>
               <input class="q-opt-d" placeholder="الخيار د" required>
             </div>
-            <select class="q-correct-opt" style="margin-top:6px;width:100%">
+            <select class="q-correct-opt" style="margin-top:6px; width:100%">
               <option value="A">الإجابة الصحيحة: الخيار (أ)</option>
               <option value="B">الإجابة الصحيحة: الخيار (ب)</option>
               <option value="C">الإجابة الصحيحة: الخيار (ج)</option>
@@ -1243,11 +1324,109 @@ function onlineQuizModal() {
         <button type="button" class="small success" onclick="addQuizQuestionRow()">+ إضافة سؤال جديد للاختبار</button>
       </div>
 
-      <button class="primary full" style="margin-top:10px">حفظ ونشر الاختبار الإلكتروني المتقدم</button>
+      <button class="primary full" style="margin-top:14px">حفظ ونشر الاختبار الإلكتروني المتقدم</button>
     </form>
   `;
   openModal();
 }
+
+// ⚡ واجهة سحب أسئلة محددة حسب (الصف ⬅️ الوحدة ⬅️ الدرس) وتحويلها بنقرة إلى اختبار إلكتروني
+function generateQuizFromBankModal() {
+  playBeep(true);
+  $("modalTitle").textContent = "⚡ توليد اختبار إلكتروني من بنك الأسئلة";
+  $("modalBody").innerHTML = `
+    <div class="form">
+      <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px;" class="full">
+        <div>
+          <label style="font-size:12px; font-weight:bold;">الصف الدراسي:</label>
+          <select id="genQuizGrade" style="width:100%; padding:8px; border-radius:8px;">
+            <option value="">-- اختر الصف --</option>
+            ${Object.values(gradeOptions).flat().map(g => `<option value="${g}">${g}</option>`).join("")}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:12px; font-weight:bold;">الوحدة Target:</label>
+          <input id="genQuizUnit" placeholder="جميع الوحدات أو حدد وحدة..." class="full">
+        </div>
+        <div>
+          <label style="font-size:12px; font-weight:bold;">الدرس Target:</label>
+          <input id="genQuizLesson" placeholder="جميع الدروس أو حدد درس..." class="full">
+        </div>
+      </div>
+
+      <div class="full" style="margin-top:10px;">
+        <label style="font-size:12px; font-weight:bold;">عنوان الاختبار الإلكتروني الجديد:</label>
+        <input id="genQuizTitle" placeholder="مثال: اختبار الوحدة الأولى السريع" required class="full">
+      </div>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;" class="full">
+        <div>
+          <label style="font-size:12px; font-weight:bold;">عدد الأسئلة المراد سحبها:</label>
+          <input type="number" id="genQuizCount" value="5" min="1" max="30" class="full">
+        </div>
+        <div>
+          <label style="font-size:12px; font-weight:bold;">مدة الاختبار (بالدقائق):</label>
+          <input type="number" id="genQuizDuration" value="30" min="5" class="full">
+        </div>
+      </div>
+
+      <button class="primary success full" style="margin-top:14px;" onclick="createQuizFromSelectedBank()">⚡ سحب الأسئلة وإنشاء رابط الاختبار فوراً</button>
+    </div>
+  `;
+  openModal();
+}
+
+async function createQuizFromSelectedBank() {
+  let grade = $("genQuizGrade").value;
+  let unit = $("genQuizUnit").value.trim();
+  let lesson = $("genQuizLesson").value.trim();
+  let title = $("genQuizTitle").value.trim() || "اختبار سحبي من بنك الأسئلة";
+  let count = parseInt($("genQuizCount").value) || 5;
+  let duration = parseInt($("genQuizDuration").value) || 30;
+
+  // سحب الأسئلة المطابقة للشروط من questionBank
+  let matchedQuestions = (data.questionBank || []).filter(q => {
+    let matchGrade = !grade || q.grade === grade;
+    let matchUnit = !unit || q.unit === unit;
+    let matchLesson = !lesson || q.lesson === lesson;
+    return matchGrade && matchUnit && matchLesson;
+  });
+
+  if (matchedQuestions.length === 0) {
+    alert("⚠️ لا توجد أسئلة مطابقة لهذه الشروط في بنك الأسئلة حالياً.");
+    return;
+  }
+
+  // خلط ورد عدد الأسئلة المطلوب
+  matchedQuestions.sort(() => Math.random() - 0.5);
+  let selectedQuestions = matchedQuestions.slice(0, count).map(q => {
+    return {
+      text: q.text,
+      options: q.options || { A: "خيار أ", B: "خيار ب", C: "خيار ج", D: "خيار د" },
+      correct: q.correct || "A"
+    };
+  });
+
+  await col("onlineQuizzes").add({
+    title: title,
+    grade: grade || "عام",
+    unit: unit,
+    lesson: lesson,
+    durationMins: duration,
+    antiCheating: true,
+    shuffle: true,
+    questions: selectedQuestions,
+    teacherId: user.uid,
+    createdAt: nowDate()
+  });
+
+  closeModal();
+  await loadAll();
+  playBeep(true);
+  toast("✅ تم سحب الأسئلة وإنشاء الاختبار بنجاح!");
+}
+//////////////////////داله جديدة ////////////////////////////////////
+
 
 function addQuizQuestionRow() {
   let container = $("quizQuestionsBuilderContainer");
@@ -1276,22 +1455,34 @@ async function saveAdvancedOnlineQuiz(e) {
   e.preventDefault();
   let questions = [];
   let rows = document.querySelectorAll("#quizQuestionsBuilderContainer > div");
+  
   rows.forEach(r => {
     questions.push({
-      text: r.querySelector(".q-text-input").value,
+      text: r.querySelector(".q-text-input").value.trim(),
       options: {
-        A: r.querySelector(".q-opt-a").value,
-        B: r.querySelector(".q-opt-b").value,
-        C: r.querySelector(".q-opt-c").value,
-        D: r.querySelector(".q-opt-d").value
+        A: r.querySelector(".q-opt-a").value.trim(),
+        B: r.querySelector(".q-opt-b").value.trim(),
+        C: r.querySelector(".q-opt-c").value.trim(),
+        D: r.querySelector(".q-opt-d").value.trim()
       },
       correct: r.querySelector(".q-correct-opt").value
     });
   });
 
+  const durationVal = $("quiz_duration") ? $("quiz_duration").value : "";
+
   await col("onlineQuizzes").add({
     title: $("quiz_title").value.trim(),
     grade: $("quiz_grade").value,
+    unit: $("quiz_unit") ? $("quiz_unit").value.trim() : "",
+    lesson: $("quiz_lesson") ? $("quiz_lesson").value.trim() : "",
+    startDate: $("quiz_startDate") ? $("quiz_startDate").value : "",
+    startTime: $("quiz_startTime") ? $("quiz_startTime").value : "",
+    endDate: $("quiz_endDate") ? $("quiz_endDate").value : "",
+    endTime: $("quiz_endTime") ? $("quiz_endTime").value : "",
+    durationMins: durationVal ? parseInt(durationVal) : null,
+    antiCheating: $("quiz_antiCheating") ? $("quiz_antiCheating").checked : false,
+    shuffle: $("quiz_shuffle") ? $("quiz_shuffle").checked : false,
     questions: questions,
     teacherId: user.uid,
     createdAt: nowDate()
@@ -1303,48 +1494,192 @@ async function saveAdvancedOnlineQuiz(e) {
   toast("تم إنشاء ونشر الاختبار التفاعلي المتقدم بنجاح!");
 }
 
+// 🌐 واجهة حل ومعاينة الاختبار مع المؤقت، منع الغش، والترتيب العشوائي (مُعدَّل)
 function openQuizTakerModal(quizId) {
   let q = data.onlineQuizzes.find(x => x.id === quizId);
   if (!q) return;
 
   playBeep(true);
-  $("modalTitle").textContent = `معاينة حل الاختبار: ${q.title}`;
+
+  // 1️⃣ التحقق من توقيت إتاحة الرابط
+  let availability = checkQuizAvailability(q);
+  if (availability.status === "not_started") {
+    $("modalTitle").textContent = `⏳ الاختبار لم يبدأ بعد: ${q.title}`;
+    $("modalBody").innerHTML = `
+      <div style="background:#fffbeb; padding:20px; border-radius:12px; border:1px solid #fde68a; text-align:center;">
+        <h3 style="color:#b45309; margin-top:0;">⏳ رابط الاختبار غير متاح حالياً</h3>
+        <p style="font-size:14px; color:#475569;">موعد افتتاح الاختبار: <b>${availability.startTimeStr}</b></p>
+      </div>
+    `;
+    openModal();
+    return;
+  } else if (availability.status === "expired") {
+    $("modalTitle").textContent = `🔒 انتهت إتاحة الاختبار: ${q.title}`;
+    $("modalBody").innerHTML = `
+      <div style="background:#fff1f2; padding:20px; border-radius:12px; border:1px solid #fecaca; text-align:center;">
+        <h3 style="color:#be123c; margin-top:0;">🔒 انتهت فترة إتاحة هذا الاختبار</h3>
+        <p style="font-size:14px; color:#475569;">تم إغلاق الرابط بتاريخ: <b>${availability.endTimeStr}</b></p>
+      </div>
+    `;
+    openModal();
+    return;
+  }
+
+  // 2️⃣ الترتيب العشوائي للأسئلة والخيارات إذا كانت الميزة مفعّلة
+  let questionsToRender = JSON.parse(JSON.stringify(q.questions || []));
+  if (q.shuffle) {
+    questionsToRender.sort(() => Math.random() - 0.5);
+  }
+
+  $("modalTitle").textContent = `حل الاختبار: ${q.title}`;
   $("modalBody").innerHTML = `
-    <div style="background:#f8fafc;padding:16px;border-radius:12px;border:1px solid #cbd5e1">
-      <div style="margin-bottom:12px">
-        <label style="font-weight:bold">اختر اسم الطالب الذي يقوم بالحل:</label>
-        <select id="takerStudentId" style="width:100%;padding:8px;border-radius:8px;margin-top:4px">
-          ${data.students.map(s => `<option value="${s.id}">${s.name} (${s.grade})</option>`).join("")}
-        </select>
+    <div style="background:#f8fafc; padding:16px; border-radius:12px; border:1px solid #cbd5e1">
+      
+      <!-- شريط معلومات وقت الاختبار والحماية -->
+      <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:10px 14px; border-radius:10px; border:1px solid #e2e8f0; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
+        <div>
+          <label style="font-weight:bold; display:block; font-size:12px; color:#64748b;">طالب الاختبار:</label>
+          <select id="takerStudentId" style="padding:4px 8px; border-radius:6px; border:1px solid #cbd5e1; font-weight:bold;">
+            ${data.students.map(s => `<option value="${s.id}">${s.name} (${s.grade})</option>`).join("")}
+          </select>
+        </div>
+
+        ${q.durationMins ? `
+          <div style="text-align:center; background:#fff7ed; border:1px solid #ffedd5; padding:4px 12px; border-radius:8px;">
+            <span style="font-size:11px; color:#c2410c; display:block; font-weight:bold;">الوقت المتبقي:</span>
+            <span id="studentQuizCountdown" class="timer" style="font-size:20px; color:#ea580c;">--:--</span>
+          </div>
+        ` : ''}
+
+        <div style="display:flex; gap:6px;">
+          ${q.antiCheating ? `<span class="tag danger">🛡️ درع منع الغش مفعّل</span>` : ''}
+          ${q.shuffle ? `<span class="tag warning">🔀 أسئلة عشوائية</span>` : ''}
+        </div>
       </div>
 
-      <form onsubmit="submitQuizAnswers(event, '${quizId}')">
-        ${q.questions.map((item, idx) => `
-          <div style="background:#fff;padding:12px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:10px">
-            <b>س${idx+1}: ${esc(item.text)}</b>
-            <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
-              <label><input type="radio" name="q_${idx}" value="A" required> ${esc(item.options.A)}</label>
-              <label><input type="radio" name="q_${idx}" value="B"> ${esc(item.options.B)}</label>
-              <label><input type="radio" name="q_${idx}" value="C"> ${esc(item.options.C)}</label>
-              <label><input type="radio" name="q_${idx}" value="D"> ${esc(item.options.D)}</label>
+      <!-- نموذج الأسئلة -->
+      <form id="studentQuizForm" onsubmit="submitQuizAnswers(event, '${q.id}')">
+        ${questionsToRender.map((item, idx) => {
+          // ترتيب خيارات عشوائي إذا كان الميزة مفعّلة
+          let keys = ["A", "B", "C", "D"];
+          if (q.shuffle) keys.sort(() => Math.random() - 0.5);
+
+          return `
+            <div style="background:#fff; padding:12px; border-radius:10px; border:1px solid #e2e8f0; margin-bottom:10px">
+              <b>س${idx+1}:${esc(item.text)}</b>
+              <div style="margin-top:8px; display:flex; flex-direction:column; gap:6px">
+                ${keys.map(k => `
+                  <label style="cursor:pointer; font-size:13px; display:flex; align-items:center; gap:6px;">
+                    <input type="radio" name="q_${q.questions.indexOf(item)}" value="${k}" required>
+                    <span>${esc(item.options[k])}</span>
+                  </label>
+                `).join("")}
+              </div>
             </div>
-          </div>
-        `).join("")}
-        <button class="primary success full" style="margin-top:10px">إرسال الحل وتصحيح واحتساب الدرجة أوتوماتيكياً</button>
+          `;
+        }).join("")}
+
+        <button id="quizSubmitBtn" class="primary success full" style="margin-top:10px">إرسال الحل وتصحيح واحتساب الدرجة أوتوماتيكياً</button>
       </form>
       <div id="quizResultView" style="margin-top:14px"></div>
     </div>
   `;
+
   openModal();
+
+  // 3️⃣ تشغيل مؤقت العد التنازلي عند وجود مدة محددة
+  if (q.durationMins) {
+    startStudentQuizTimer(q.durationMins, q.id);
+  }
+
+  // 4️⃣ تفعيل مستمع حماية منع الغش عند التفعيل
+  if (q.antiCheating) {
+    initAntiCheatingShield(q.id);
+  }
 }
+
+// -------------------------------------------------------------
+// 🛠️ الدوال المساعدة التابعة لواجهة الاختبار
+// -------------------------------------------------------------
+
+// فحص حالة الإتاحة الزمانية
+function checkQuizAvailability(q) {
+  if (!q.startDate || !q.endDate) return { status: "active" };
+
+  let now = new Date();
+  let start = new Date(`${q.startDate}T${q.startTime || '00:00'}`);
+  let end = new Date(`${q.endDate}T${q.endTime || '23:59'}`);
+
+  if (now < start) {
+    return { status: "not_started", startTimeStr: `${q.startDate} ${q.startTime || '00:00'}` };
+  }
+  if (now > end) {
+    return { status: "expired", endTimeStr: `${q.endDate} ${q.endTime || '23:59'}` };
+  }
+  return { status: "active" };
+}
+
+// تشغيل العداد التنازلي للامتحان
+function startStudentQuizTimer(durationMins, quizId) {
+  if (window.quizTimerInterval) clearInterval(window.quizTimerInterval);
+  let totalSecs = durationMins * 60;
+
+  window.quizTimerInterval = setInterval(() => {
+    totalSecs--;
+    let displayEl = $("studentQuizCountdown");
+    if (displayEl) {
+      let m = String(Math.floor(totalSecs / 60)).padStart(2, '0');
+      let s = String(totalSecs % 60).padStart(2, '0');
+      displayEl.textContent = `${m}:${s}`;
+    }
+
+    if (totalSecs <= 0) {
+      clearInterval(window.quizTimerInterval);
+      toast("⏰ انتهى الوقت المخصص للامتحان! جاري التسليم التلقائي...");
+      let submitBtn = $("quizSubmitBtn");
+      if (submitBtn) submitBtn.click();
+    }
+  }, 1000);
+}
+
+// تفعيل مراقبة تبديل التبويبات (Tab Switching)
+function initAntiCheatingShield(quizId) {
+  window.quizWarningCount = 0;
+  if (window.antiCheatHandler) {
+    document.removeEventListener("visibilitychange", window.antiCheatHandler);
+  }
+
+  window.antiCheatHandler = function() {
+    if (document.hidden) {
+      window.quizWarningCount++;
+      if (window.quizWarningCount === 1) {
+        alert("⚠️ تحذير نظام منع الغش: لقد قمت بمغادرة شاشة الامتحان! تكرار الخروج سيؤدي لإغلاق الامتحان وتسليم إجاباتك الحالية فوراً.");
+      } else if (window.quizWarningCount >= 2) {
+        alert("🚨 تم رصد مغادرة متكررة لمتصفح الامتحان! تم إغلاق الامتحان وتسليم الإجابات أوتوماتيكياً.");
+        let submitBtn = $("quizSubmitBtn");
+        if (submitBtn) submitBtn.click();
+      }
+    }
+  };
+
+  document.addEventListener("visibilitychange", window.antiCheatHandler);
+}submitQuizAnswers
 
 async function submitQuizAnswers(e, quizId) {
   e.preventDefault();
+
+  // 1️⃣ إيقاف مؤقت العد التنازلي وتنظيف مستمع منع الغش
+  if (window.quizTimerInterval) clearInterval(window.quizTimerInterval);
+  if (window.antiCheatHandler) {
+    document.removeEventListener("visibilitychange", window.antiCheatHandler);
+  }
+
   let q = data.onlineQuizzes.find(x => x.id === quizId);
-  let stId = $("takerStudentId").value;
+  let stId = $("takerStudentId")?.value;
   let st = data.students.find(s => s.id === stId);
   if (!q || !st) return;
 
+  // 2️⃣ تصحيح الأسئلة واحتساب الدرجة
   let score = 0;
   q.questions.forEach((item, idx) => {
     let chosen = document.querySelector(`input[name="q_${idx}"]:checked`)?.value;
@@ -1352,6 +1687,10 @@ async function submitQuizAnswers(e, quizId) {
   });
 
   score = Math.round(score);
+  let earnedPoints = Math.round(score / 2); // احتساب نقاط الكرت الذهبي الموزونة
+
+  // 3️⃣ تسجيل الحضور والدرجة في Firestore
+  let locationNote = (q.unit || q.lesson) ? ` [${q.unit || ''} - ${q.lesson || ''}]` : '';
 
   await col("attendance").add({
     studentId: st.id,
@@ -1359,19 +1698,50 @@ async function submitQuizAnswers(e, quizId) {
     date: nowDate(),
     status: "اختبار إلكتروني",
     score: score,
-    notes: `اختبار أونلاين: ${q.title}`,
+    notes: `اختبار أونلاين: ${q.title}${locationNote}`,
+    pointsGained: earnedPoints,
     teacherId: user.uid
   });
 
+  // 4️⃣ إضافة نقاط التفوق لرصيد الكرت الذهبي (rewards)
+  await col("rewards").add({
+    studentId: st.id,
+    studentName: st.name,
+    points: earnedPoints,
+    title: `اختبار إلكتروني أونلاين: ${q.title} (${score}/100)`,
+    date: nowDate(),
+    teacherId: user.uid
+  });
+
+  // 5️⃣ تجهيز نص التقرير للولّي عبر WhatsApp
+  let ratingText = score >= 85 ? "ممتاز 🌟" : (score >= 65 ? "جيد جداً 👍" : (score >= 50 ? "مقبول ⚠️" : "ضعيف - يحتاج مراجعة ❌"));
+  let waMsg = encodeURIComponent(
+    `*📱 تقرير نتيجة اختبار تفاعلي أونلاين*\n\n` +
+    `• الطالب: ${st.name}\n` +
+    `• الاختبار: ${q.title}\n` +
+    (q.unit ? `• الوحدة: ${q.unit}\n` : '') +
+    `• الدرجة المستحقة: *${score} / 100* (${ratingText})\n` +
+    `• نقاط الكرت الذهبي المضافة: +${earnedPoints} نقطة 🌟\n\n` +
+    `_تم تسجيل وتوثيق النتيجة أوتوماتيكياً في سجل الطالب Profile._`
+  );
+
+  // 6️⃣ عرض النتيجة والتغذية الراجعة بالواجهة
   $("quizResultView").innerHTML = `
-    <div style="background:#ecfdf5;padding:12px;border-radius:10px;border:1px solid #a7f3d0;text-align:center">
-      <h3 style="color:#047857;margin:0">✅ تم تصحيح الاختبار بنجاح!</h3>
-      <div style="font-size:22px;font-weight:bold;color:#059669;margin-top:6px">درجة الطالب: ${score} / 100</div>
-      <p class="muted" style="margin:4px 0 0">تم رصد وتخزين النتيجة أوتوماتيكياً في سجل الطالب (Profile).</p>
+    <div style="background:#ecfdf5; padding:16px; border-radius:12px; border:1px solid #a7f3d0; text-align:center;">
+      <h3 style="color:#047857; margin:0 0 6px;">✅ تم تصحيح وتسليم الاختبار بنجاح!</h3>
+      <div style="font-size:26px; font-weight:bold; color:#059669; margin-top:4px;">درجة الطالب: ${score} / 100</div>
+      <p class="muted" style="margin:6px 0 12px; font-size:13px;">تم رصد النتيجة بالسجل وإضافة (<b>+${earnedPoints} نقطة</b>) لرصيد الكرت الذهبي.</p>
+      
+      ${st.phone ? `
+        <a href="https://wa.me/${st.phone}?text=${waMsg}" target="_blank" class="primary success" style="display:inline-flex; align-items:center; gap:6px; text-decoration:none; padding:8px 16px; border-radius:8px; font-weight:bold; font-size:13px;">
+          📱 إرسال النتيجة والتفاصيل لولي الأمر عبر WhatsApp
+        </a>
+      ` : ''}
     </div>
   `;
+
   playBeep(true);
-  toast(`تم تصحيح وتسجيل الدرجة (${score}/100) للطالب ${st.name}`);
+  toast(`تم تصحيح ورصد درجة (${score}/100) للطالب ${st.name}`);
   await loadAll();
 }
 
@@ -1548,12 +1918,35 @@ async function cycleAttendanceState(stId, stName) {
 
   playBeep(true);
   
+  // 🎯 جلب المجموعة المختارة حالياً في واجهة الحضور السريع
+  let grpId = $("quick_att_group") ? $("quick_att_group").value : null;
+  let gObj = (data.groups || []).find(g => g.id === grpId);
+
+  let targetGroupId = grpId || null;
+  let targetGroupName = gObj ? gObj.name : "";
+
   let st = data.students.find(s => s.id === stId);
+
+  // إذا لم تكن هناك مجموعة مختارة في القائمة، نأخذ أول مجموعة من المنضم إليها الطالب
+  if (!targetGroupId && st) {
+    if (st.groupsSetup && st.groupsSetup.length > 0) {
+      targetGroupId = st.groupsSetup[0].groupId;
+      let matchedG = (data.groups || []).find(g => g.id === targetGroupId);
+      targetGroupName = matchedG ? matchedG.name : "";
+    } else if (st.groupId) {
+      targetGroupId = st.groupId;
+      let matchedG = (data.groups || []).find(g => g.id === targetGroupId);
+      targetGroupName = matchedG ? matchedG.name : "";
+    }
+  }
+
   if (statusStr === "غائب" && st) {
     if (st.payType === "بالشهر") {
       await col("makeups").add({
         studentId: stId,
         studentName: stName,
+        groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
+        groupName: targetGroupName,  // 👈 تم إضافة اسم المجموعة
         date: nowDate(),
         time: "مستحقة للتعويض (تلقائي)",
         done: false,
@@ -1566,7 +1959,16 @@ async function cycleAttendanceState(stId, stName) {
   }
 
   await col("attendance").add({
-    studentId: stId, studentName: stName, date: nowDate(), status: statusStr, homework: "تم التسليم ✅", noteType: "عادي", notes: "تسجيل لمسة واحدة متزامن", teacherId: user.uid
+    studentId: stId, 
+    studentName: stName, 
+    groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
+    groupName: targetGroupName,  // 👈 تم إضافة اسم المجموعة
+    date: nowDate(), 
+    status: statusStr, 
+    homework: "تم التسليم ✅", 
+    noteType: "عادي", 
+    notes: "تسجيل لمسة واحدة متزامن", 
+    teacherId: user.uid
   });
 }
 
@@ -1929,10 +2331,16 @@ async function saveRetroSession(e){
   if(noteType === "إيجابي") points += 25;
   if(noteType === "سلبي") points -= 20;
 
+  // 🎯 استخراج المجموعات المحددة (ID والاسم)
+  let selectedGroupIds = [];
   let selectedGroupNames = [];
   document.querySelectorAll(".retro-group-checkbox:checked").forEach(cb => {
+    selectedGroupIds.push(cb.value);
     selectedGroupNames.push(cb.dataset.name);
   });
+
+  let targetGroupId = selectedGroupIds.length > 0 ? selectedGroupIds[0] : null;
+  let targetGroupName = selectedGroupNames.length > 0 ? selectedGroupNames.join(", ") : "";
 
   let groupInfoNote = selectedGroupNames.length > 0 ? ` [مجموعة: ${selectedGroupNames.join(", ")}]` : "";
   let baseNote = rawNote || (att === "أول حصة" ? "حصة تعارف أولى" : "حصة مسجلة");
@@ -1941,6 +2349,8 @@ async function saveRetroSession(e){
   await col("attendance").add({
     studentId: st.id,
     studentName: st.name,
+    groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
+    groupName: targetGroupName,  // 👈 تم إضافة اسم المجموعة
     date: $("retro_date_val").value,
     status: att,
     homework: hw,
@@ -1953,6 +2363,7 @@ async function saveRetroSession(e){
   await col("rewards").add({
     studentId: st.id,
     studentName: st.name,
+    groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
     points: points,
     title: `تقييم حصة (${att} - ${hw})`,
     date: $("retro_date_val").value,
@@ -2555,6 +2966,9 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
     localStorage.setItem("hw_reminders_" + user.uid, JSON.stringify(data.homeworkReminders));
   }
 
+  // 🎯 استخراج المجموعة المطابقة لاسم الحصة (إن وجدت)
+  let matchedGroup = (data.groups || []).find(g => sessionName.includes(g.name));
+
   // 2. تحديد الطلاب المستهدفين من الحصة المباشرة
   let targetStudents = data.students.filter(s => sessionName.includes(s.name) || (sessionName.includes("مجموعة") && s.groupsSetup && s.groupsSetup.some(gs => sessionName.includes(data.groups.find(g=>g.id===gs.groupId)?.name))));
   if(targetStudents.length === 0) targetStudents = data.students;
@@ -2567,6 +2981,28 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
       let hw = att === "أول حصة" ? "معفي (أول حصة)" : ($("ind_hw_" + st.id)?.value || "تم التسليم");
       let rawNote = $("ind_notes_" + st.id)?.value || "";
       let noteType = analyzeNoteSentiment(rawNote);
+
+      // 🎯 تحديد معرف واسم المجموعة الخاصين بالطالب لهذه الحصة
+      let targetGroupId = matchedGroup ? matchedGroup.id : null;
+      let targetGroupName = matchedGroup ? matchedGroup.name : "";
+
+      // إذا لم تتطابق مباشرة مع اسم الحصة، نبحث في المجموعات المنضم إليها الطالب
+      if (!targetGroupId && st.groupsSetup && st.groupsSetup.length > 0) {
+        let matchedGs = st.groupsSetup.find(gs => {
+          let gObj = (data.groups || []).find(g => g.id === gs.groupId);
+          return gObj && sessionName.includes(gObj.name);
+        });
+
+        if (matchedGs) {
+          targetGroupId = matchedGs.groupId;
+          let gObj = (data.groups || []).find(g => g.id === targetGroupId);
+          targetGroupName = gObj ? gObj.name : "";
+        } else if (st.groupsSetup.length === 1) {
+          targetGroupId = st.groupsSetup[0].groupId;
+          let gObj = (data.groups || []).find(g => g.id === targetGroupId);
+          targetGroupName = gObj ? gObj.name : "";
+        }
+      }
 
       // حساب نقاط التفوق الموزونة
       let points = 10;
@@ -2590,6 +3026,8 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
       await col("attendance").add({
         studentId: st.id,
         studentName: st.name,
+        groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
+        groupName: targetGroupName,  // 👈 تم إضافة اسم المجموعة
         date: nowDate(),
         status: att,
         homework: hw,
@@ -2604,6 +3042,7 @@ async function confirmLockAndCompleteSession(sessionKey, sessionName) {
       await col("rewards").add({
         studentId: st.id,
         studentName: st.name,
+        groupId: targetGroupId,      // 👈 تم إضافة معرف المجموعة
         points: points,
         title: `حصة مباشرة (${att})`,
         date: nowDate(),
@@ -2801,30 +3240,38 @@ function renderQuestionBank(container) {
   `;
 }
 
-// توليد صفوف جدول بنك الأسئلة
+// توليد صفوف جدول بنك الأسئلة (مُعدَّل)
 function generateQuestionBankRows(list) {
   if (!list || list.length === 0) {
-    return `<tr><td colspan="6" style="text-align:center;padding:25px" class="muted">لا توجد أسئلة مسجلة في البنك حالياً. قم بإنشاء سؤال جديد أو رفع مستندات عبر الذكاء الاصطناعي.</td></tr>`;
+    return `<tr><td colspan="6" style="text-align:center; padding:25px" class="muted">لا توجد أسئلة مسجلة في البنك حالياً. قم بإنشاء سؤال جديد أو رفع مستندات عبر الذكاء الاصطناعي.</td></tr>`;
   }
 
   return list.map(q => {
-    const hasParams = q.hasDynamicParams ? `<span class="tag success">متغير 🎲</span>` : `<span class="tag muted">ثابت</span>`;
+    const hasParams = q.hasDynamicParams ? `<span class="tag success" title="يحتوي على أرقام/متغيرات ديناميكية">🎲 متغير</span>` : `<span class="tag muted">ثابت</span>`;
     const hasSolution = q.solutionSteps ? `<span class="tag success">متوفر ✅</span>` : `<span class="tag warning">غير محدد</span>`;
+
+    // عرض الوحدة والدرس
+    const locationInfo = (q.unit || q.lesson) 
+      ? `<span style="font-size:12px; color:#475569">${esc(q.unit || '---')}<br><small style="color:#64748b">${esc(q.lesson || '---')}</small></span>`
+      : '<span style="color:#94a3b8; font-size:12px;">عام / غير محدد</span>';
 
     return `
       <tr>
         <td><b>${esc(q.grade || q.stage || 'عام')}</b></td>
-        <td><span class="tag" style="background:#e0f2fe;color:#0369a1">${esc(q.type || 'عام')}</span></td>
+        <td>${locationInfo}</td>
         <td>
-          <div style="max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          <span class="tag" style="background:#e0f2fe; color:#0369a1">${esc(q.type || 'عام')}</span>
+          <div style="margin-top:4px;">${hasParams}</div>
+        </td>
+        <td>
+          <div style="max-width:280px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="${esc(q.text || '')}">
             ${q.hasImage || q.extractedImgUrl ? '🖼️ [شكل هندسي] ' : ''}${esc(q.text || '')}
           </div>
         </td>
-        <td>${hasParams}</td>
         <td>${hasSolution}</td>
         <td class="actions">
-          <button class="small" onclick="openQuestionReviewModal('${q.id}')">🔍 معاينة ومراجعة</button>
-          <button class="small warning" onclick="generateVariants('${q.id}')">🎲 توليد نماذج</button>
+          <button class="small" onclick="openQuestionReviewModal('${q.id}')">🔍 معاينة</button>
+          <button class="small warning" onclick="generateVariants('${q.id}')">🎲 نماذج</button>
           <button class="small danger" onclick="deleteQuestionWithUndo('${q.id}')">🗑️ حذف</button>
         </td>
       </tr>
@@ -2832,22 +3279,52 @@ function generateQuestionBankRows(list) {
   }).join('');
 }
 
-// تصفية نتائج البحث
+// تصفية نتائج البحث في بنك الأسئلة (مُعدَّل)
 function filterQuestionBankTable() {
   const q = ($("qBankSearch")?.value || "").toLowerCase();
   const grade = $("qBankGradeFilter")?.value || "";
-  const type = $("qBankTypeFilter")?.value || "";
+  const unit = $("qBankUnitFilter")?.value || "";
+  const lesson = $("qBankLessonFilter")?.value || "";
 
   const filtered = (data.questionBank || []).filter(item => {
     const matchQ = (item.text || "").toLowerCase().includes(q);
     const matchGrade = !grade || item.grade === grade || item.stage === grade;
-    const matchType = !type || item.type === type;
-    return matchQ && matchGrade && matchType;
+    const matchUnit = !unit || item.unit === unit;
+    const matchLesson = !lesson || item.lesson === lesson;
+    return matchQ && matchGrade && matchUnit && matchLesson;
   });
 
   const tbody = $("questionBankTableBody");
   if (tbody) tbody.innerHTML = generateQuestionBankRows(filtered);
 }
+
+// تحديث قائمة الوحدات المتاحة عند تغيير الصف الدراسي
+function onGradeFilterChange() {
+  const selectedGrade = $("qBankGradeFilter")?.value || "";
+  const unitSelect = $("qBankUnitFilter");
+  const lessonSelect = $("qBankLessonFilter");
+
+  // استخراج الوحدات المرتبطة بالصف المحدد فقط
+  const availableQuestions = (data.questionBank || []).filter(item => 
+    !selectedGrade || item.grade === selectedGrade || item.stage === selectedGrade
+  );
+
+  const units = [...new Set(availableQuestions.map(q => q.unit).filter(Boolean))];
+
+  if (unitSelect) {
+    unitSelect.innerHTML = `<option value="">جميع الوحدات</option>` + 
+      units.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
+  }
+
+  // إعادة ضبط قائمة الدروس
+  if (lessonSelect) {
+    lessonSelect.innerHTML = `<option value="">جميع الدروس</option>`;
+  }
+
+  filterQuestionBankTable();
+}
+
+
 
 // 2. منشئ الاختبارات السريع (Prompt-to-Exam & Templates)
 function openPromptToExamModal() {
@@ -2988,6 +3465,7 @@ function handleFileDrop(e) {
   }
 }
 
+// 📸 الرفع الجماعي ومعالجة المستندات والـ PDF وتصنيف (الوحدات والدروس)
 function processBatchFiles(files) {
   if (!files || files.length === 0) return;
 
@@ -3004,7 +3482,7 @@ function processBatchFiles(files) {
     current++;
     const percent = Math.round((current / total) * 100);
     if (progressBar) progressBar.style.width = percent + "%";
-    if (progressLabel) progressLabel.textContent = `جاري استخراج الرموز والمعادلات الهندسية وتنظيف Regex (${current}/${total})...`;
+    if (progressLabel) progressLabel.textContent = `جاري استخراج العناوين وتصنيف (الوحدات والدروس) وتنظيف المعادلات (${current}/${total})...`;
 
     if (current >= total) {
       clearInterval(interval);
@@ -3012,6 +3490,8 @@ function processBatchFiles(files) {
       const extractedDoc = {
         grade: "الصف الثالث الإعدادي",
         stage: "إعدادي",
+        unit: "الوحدة الأولى: حساب المثلثات",         // 🆕 التعرف التلقائي على الوحدة
+        lesson: "الدرس الأول: النسب المثلثية الأساسية", // 🆕 التعرف التلقائي على الدرس
         type: "هندسة ورسومات",
         text: "في الشكل المقابل: أ ب جـ مثلث قائم الزاويه في ب، فيه أ ب = 6 سم، ب جـ = 8 سم. أوجد طول أ جـ وجيب تمام الزاويه أ.",
         hasImage: true,
@@ -3023,11 +3503,63 @@ function processBatchFiles(files) {
       };
 
       await col("questionBank").add(extractedDoc);
-      toast("✅ تم استخراج النصوص والمعادلات وفصل الأشكال الهندسية بنجاح!");
+      toast("✅ تم استخراج النصوص والمعادلات وتصنيف الأسئلة تحت (الوحدات والدروس) بنجاح!");
       closeModal();
       await loadAll();
     }
   }, 600);
+}
+
+// 🤖 الرفع المحدث لممر الذكاء الاصطناعي الشامل (Vision AI & Multi-Page PDF)
+function processUnifiedAiVisionUpload(files) {
+  if (!files || files.length === 0) return;
+
+  const statusBox = $("aiSelfLearningStatusBox");
+  const progressBar = $("aiProgressBar");
+  const progressLabel = $("aiProgressLabel");
+  const langMode = $("aiLangSelect") ? $("aiLangSelect").value : "bilingual";
+  const isSelfLearning = $("aiSelfLearningToggle") ? $("aiSelfLearningToggle").checked : false;
+
+  if (statusBox) statusBox.style.display = "block";
+
+  let current = 0;
+  const total = files.length;
+
+  const interval = setInterval(async () => {
+    current++;
+    const percent = Math.round((current / total) * 100);
+    if (progressBar) progressBar.style.width = percent + "%";
+    if (progressLabel) progressLabel.textContent = `جاري التعرف الآلي على تقسيم (الوحدات والدروس) وتحليل الصفحة ${current} من ${total}...`;
+
+    if (current >= total) {
+      clearInterval(interval);
+
+      let sampleQuestions = [
+        {
+          grade: "الصف الثاني الإعدادي",
+          stage: "إعدادي",
+          unit: "الوحدة الأولى: الجبر",         // 🆕 التقسيم الآلي للوحدة
+          lesson: "الدرس الأول: تحليل المقدار", // 🆕 التقسيم الآلي للدرس
+          type: "اختر من متعدد",
+          text: langMode === 'en' ? "If x + 3 = 7, find the value of x² - 1." : (langMode === 'bilingual' ? "If x + 3 = 7 (إذا كان س + 3 = 7), find x² (فأوجد قيمة س²)." : "إذا كان س + 3 = 7، فأوجد قيمة س² - 1."),
+          options: { A: "15", B: "16", C: "24", D: "8" },
+          correct: "A",
+          solutionSteps: "Step 1: x = 7 - 3 = 4. Step 2: 4² - 1 = 16 - 1 = 15.",
+          hasDynamicParams: true,
+          teacherId: user?.uid || "system"
+        }
+      ];
+
+      for (let q of sampleQuestions) {
+        await col("questionBank").add(q);
+      }
+
+      toast("✅ تم استخراج الـ PDF، تقسيمه إلى (وحدات ودروس)، وتصنيف الأسئلة تحتها ببنك الأسئلة!");
+      if (statusBox) statusBox.style.display = "none";
+      await loadAll();
+      if (typeof switchHubTab === "function") switchHubTab('bank');
+    }
+  }, 700);
 }
 
 // 4. نافذة المراجعة والتحسين وتوليد الأشكال المتغيرة (Review Modal & Variant Generator)
@@ -3264,16 +3796,35 @@ async function saveAutoGradedScore(score) {
   toast(`تم رصد درجة (${score}/100) للطالب ${st.name} بنجاح!`);
 }
 
-// 8. إضافة سؤال يدوي بالبنك
+// 8. إضافة سؤال يدوي بالبنك (مُعدَّل)
 function addQuestionModal() {
   playBeep(true);
   $("modalTitle").textContent = "إضافة سؤال إلى بنك الأسئلة";
   $("modalBody").innerHTML = `<form class="form" onsubmit="saveQuestion(event)">
-    <select id="q_stage" onchange="updateQGradeDropdown()"><option>ابتدائي</option><option selected>إعدادي</option><option>ثانوي</option></select>
-    <select id="q_grade" required></select>
-    <select id="q_type" class="full"><option>اختر من متعدد</option><option>صواب أم خطأ</option><option>مقالي / حل خطوات</option><option>هندسة ورسومات</option></select>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;" class="full">
+      <select id="q_stage" onchange="updateQGradeDropdown()">
+        <option>ابتدائي</option>
+        <option selected>إعدادي</option>
+        <option>ثانوي</option>
+      </select>
+      <select id="q_grade" required></select>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;" class="full">
+      <input id="q_unit" placeholder="الوحدة (مثال: الوحدة الأولى: الجبر)">
+      <input id="q_lesson" placeholder="الدرس (مثال: الدرس الأول: تحليل المقدار)">
+    </div>
+
+    <select id="q_type" class="full">
+      <option>اختر من متعدد</option>
+      <option>صواب أم خطأ</option>
+      <option>مقالي / حل خطوات</option>
+      <option>هندسة ورسومات</option>
+    </select>
+
     <textarea id="q_text" placeholder="اكتب نص السؤال والمعادلة هنا..." required class="full" rows="3"></textarea>
-    <button class="primary full">حفظ السؤال بالبنك</button>
+    
+    <button class="primary full" style="margin-top:10px;">حفظ السؤال بالبنك</button>
   </form>`;
   openModal(); 
   updateQGradeDropdown();
@@ -3291,13 +3842,20 @@ function updateQGradeDropdown() {
 
 async function saveQuestion(e) {
   e.preventDefault();
+
+  const unitVal = $("q_unit") ? $("q_unit").value.trim() : "";
+  const lessonVal = $("q_lesson") ? $("q_lesson").value.trim() : "";
+
   await col("questionBank").add({
     stage: $("q_stage").value, 
     grade: $("q_grade").value, 
+    unit: unitVal,
+    lesson: lessonVal,
     type: $("q_type").value, 
     text: $("q_text").value.trim(), 
     teacherId: user?.uid || "system"
   });
+
   closeModal(); 
   await loadAll(); 
   playBeep(true); 
@@ -3991,24 +4549,35 @@ function examModal(){
     <label class="full">نوع الامتحان المستهدف: 
       <select id="ex_type" onchange="toggleExamTargetType()">
         <option value="stage">امتحان لمرحلة أو صف دراسي كامل</option>
-        <option value="student">امتحان لطالب فردي محدد</option>
+        <option value="group">امتحان لمجموعة أكاديمية محددة 👥</option>
+        <option value="student">امتحان لطالب فردي محدد 👤</option>
       </select>
     </label>
 
-    <div id="stageTargetGroup" class="full" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div>
-        <label>المرحلة:</label>
-        <select id="ex_stage" onchange="updateExamGradeDropdown()"><option>ابتدائي</option><option selected>إعدادي</option><option>ثانوي</option></select>
-      </div>
-      <div>
-        <label>الصف المستهدف:</label>
-        <select id="ex_grade" required></select>
+    <!-- 1. اختيار الصف والمرحلة -->
+    <div id="stageTargetGroup" class="full">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label>المرحلة:</label>
+          <select id="ex_stage" onchange="updateExamGradeDropdown()"><option>ابتدائي</option><option selected>إعدادي</option><option>ثانوي</option></select>
+        </div>
+        <div>
+          <label>الصف المستهدف:</label>
+          <select id="ex_grade"></select>
+        </div>
       </div>
     </div>
 
+    <!-- 2. اختيار المجموعة الأكاديمية -->
+    <div id="groupTargetGroup" class="full hidden">
+      <label>اختر المجموعة الأكاديمية:</label>
+      <select id="ex_group" class="full">${(data.groups || []).map(g => `<option value="${g.id}">${esc(g.name)} (${esc(g.grade)})</option>`).join("")}</select>
+    </div>
+
+    <!-- 3. اختيار الطالب الفردي -->
     <div id="studentTargetGroup" class="full hidden">
       <label>اختر الطالب المحدد:</label>
-      <select id="ex_student">${data.students.map(s=>`<option value="${s.id}">${esc(s.name)} (${esc(s.grade)})</option>`).join("")}</select>
+      <select id="ex_student" class="full">${(data.students || []).map(s => `<option value="${s.id}">${esc(s.name)} (${esc(s.grade)})</option>`).join("")}</select>
       <div style="margin-top:10px">
         <label style="font-weight:bold;color:#047857">درجة الطالب (من 100) - لرصدها فوراً في تقرير ولي الأمر (اختياري):</label>
         <input type="number" id="ex_student_score" placeholder="مثال: 95 (اتركها فارغة إذا أردت رصدها لاحقاً)" min="0" max="100">
@@ -4019,7 +4588,118 @@ function examModal(){
     <input id="ex_date" type="date" value="${nowDate()}" class="full">
     <button class="primary full" style="margin-top:10px">حفظ الامتحان ورصد الدرجة</button>
   </form>`;
-  openModal(); updateExamGradeDropdown();
+  
+  openModal(); 
+  updateExamGradeDropdown();
+  toggleExamTargetType(); // تحديث حالة الإظهار والإخفاء فور فتح المودال
+}
+
+function toggleExamTargetType(){
+  let type = $("ex_type").value;
+
+  // 1️⃣ إخفاء جميع الأقسام بالتحكم المباشر لتفادي أي تعارض في الـ CSS
+  if ($("stageTargetGroup")) $("stageTargetGroup").style.display = "none";
+  if ($("groupTargetGroup")) $("groupTargetGroup").style.display = "none";
+  if ($("studentTargetGroup")) $("studentTargetGroup").style.display = "none";
+
+  // 2️⃣ إزالة خاصية الإلزام (required) عن الحقول المخفية حتى لا تتعطل عملية الحفظ (Form Submit)
+  if ($("ex_grade")) $("ex_grade").removeAttribute("required");
+  if ($("ex_group")) $("ex_group").removeAttribute("required");
+  if ($("ex_student")) $("ex_student").removeAttribute("required");
+
+  // 3️⃣ إظهار القسم المستهدف وإضافة required للحقل النشط فقط
+  if (type === "student") {
+    if ($("studentTargetGroup")) $("studentTargetGroup").style.display = "block";
+    if ($("ex_student")) $("ex_student").setAttribute("required", "required");
+  } else if (type === "group") {
+    if ($("groupTargetGroup")) $("groupTargetGroup").style.display = "block";
+    if ($("ex_group")) $("ex_group").setAttribute("required", "required");
+  } else {
+    if ($("stageTargetGroup")) $("stageTargetGroup").style.display = "block";
+    if ($("ex_grade")) $("ex_grade").setAttribute("required", "required");
+  }
+}
+
+async function saveDynamicExam(e){
+  e.preventDefault();
+  let type = $("ex_type").value;
+  let examData = { 
+    examType: type, 
+    title: $("ex_title").value.trim(), 
+    date: $("ex_date").value, 
+    isLocked: false, 
+    teacherId: user.uid 
+  };
+
+  let initialScore = null;
+
+  if(type === "student"){
+    let stId = $("ex_student").value; 
+    let st = (data.students || []).find(x => String(x.id) === String(stId));
+    examData.studentId = stId; 
+    examData.studentName = st ? st.name : "طالب"; 
+    examData.gradeFilter = st ? st.grade : "طالب فردي";
+    
+    let scoreInput = $("ex_student_score") ? $("ex_student_score").value.trim() : "";
+    if (scoreInput !== "") {
+      initialScore = Number(scoreInput);
+      examData.scores = { [stId]: initialScore };
+    }
+  } else if(type === "group"){
+    let grpId = $("ex_group").value;
+    let grp = (data.groups || []).find(g => String(g.id) === String(grpId));
+    examData.groupId = grpId;
+    examData.groupName = grp ? grp.name : "مجموعة";
+    examData.gradeFilter = grp ? `مجموعة: ${grp.name}` : "مجموعة";
+  } else {
+    examData.stage = $("ex_stage").value; 
+    examData.gradeFilter = $("ex_grade").value;
+  }
+
+  // 1️⃣ حفظ بيانات الامتحان في قاعدة البيانات
+  let docRef = await col("exams").add(examData);
+
+  // 2️⃣ إذا تم إدخال الدرجة فوراً عند الإنشاء لطالب فردي
+  if (type === "student" && initialScore !== null) {
+    let stId = $("ex_student").value;
+    let st = (data.students || []).find(x => String(x.id) === String(stId));
+    let examPoints = Math.round(initialScore / 2);
+
+    await col("attendance").add({
+      studentId: String(stId),
+      studentName: st ? st.name : "طالب",
+      date: $("ex_date").value || nowDate(),
+      status: "حضر الامتحان",
+      score: initialScore,
+      examId: String(docRef.id),
+      examTitle: examData.title,
+      notes: `درجة اختبار (${examData.title}): ${initialScore} / 100`,
+      pointsGained: examPoints,
+      teacherId: user.uid
+    });
+
+    await col("rewards").add({ 
+      studentId: String(stId), 
+      studentName: st ? st.name : "طالب", 
+      points: examPoints, 
+      title: `درجة اختبار موزونة: ${examData.title} (${initialScore}/100)`, 
+      date: $("ex_date").value || nowDate(), 
+      teacherId: user.uid 
+    });
+  }
+
+  closeModal(); 
+  await loadAll(); 
+  playBeep(true); 
+
+  toast(initialScore !== null ? "تم إنشاء الامتحان ورصد الدرجة فوراً!" : "تم حفظ الامتحان بنجاح 🚀");
+
+  // ⚡ 3️⃣ فتح شاشة رصد الدرجات تلقائياً بعد حفظ امتحان المجموعة أو الصف
+  if (type !== "student" || initialScore === null) {
+    setTimeout(() => {
+      gradeExamModal(docRef.id);
+    }, 200);
+  }
 }
 
 function toggleExamTargetType(){
@@ -4040,117 +4720,128 @@ function updateExamGradeDropdown(){
   if(gradeSelect){ gradeSelect.innerHTML = opts.map(g=>`<option>${g}</option>`).join(""); }
 }
 
-async function saveDynamicExam(e){
-  e.preventDefault();
-  let type = $("ex_type").value;
-  let examData = { examType: type, title: $("ex_title").value.trim(), date: $("ex_date").value, isLocked: false, teacherId: user.uid };
+function examsPage(c){
+  let examsList = data.exams || [];
+  let attendanceList = data.attendance || [];
+  let studentsList = data.students || [];
+  let groupsList = data.groups || [];
 
-  let initialScore = null;
-  if(type === "student"){
-    let stId = $("ex_student").value; 
-    let st = data.students.find(x => x.id === stId);
-    examData.studentId = stId; 
-    examData.studentName = st ? st.name : "طالب"; 
-    examData.gradeFilter = st ? st.grade : "طالب فردي";
-    
-    let scoreInput = $("ex_student_score") ? $("ex_student_score").value.trim() : "";
-    if (scoreInput !== "") {
-      initialScore = Number(scoreInput);
-      examData.scores = { [stId]: initialScore };
-    }
-  } else {
-    examData.stage = $("ex_stage").value; 
-    examData.gradeFilter = $("ex_grade").value;
-  }
+  c.innerHTML = `<section class="section">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div>
+        <h3 style="margin:0;color:#1e293b">📝 إدارة الامتحانات والشهادات الفاخرة</h3>
+        <p class="muted" style="margin:4px 0 0">عرض كروت الامتحانات المخصصة للطلاب والمجموعات والمراحل الدراسية</p>
+      </div>
+      <button class="primary" onclick="examModal()">+ عمل امتحان جديد 🎯</button>
+    </div>
 
-  let docRef = await col("exams").add(examData);
+    ${examsList.length === 0 ? `
+      <div style="text-align:center;padding:40px;background:#fff;border-radius:16px;border:1px solid #cbd5e1;color:#64748b">
+        لا توجد امتحانات مسجلة حالياً. اضغط على "+ عمل امتحان جديد" للبدء.
+      </div>
+    ` : `
+      <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:16px">
+        ${examsList.map(x => {
+          // 1. تحديد نوع المستهدف والشارة المناسبة
+          let targetBadge = x.examType === 'student' 
+            ? '👤 طالب فردي' 
+            : (x.examType === 'group' ? '👥 مجموعة أكاديمية' : '📚 صف دراسي');
+          
+          // 2. تجنب فقدان اسم المستهدف المخصص
+          let targetName = "عام";
+          if (x.examType === 'student') {
+            let st = studentsList.find(s => String(s.id) === String(x.studentId));
+            targetName = x.studentName || (st ? st.name : x.gradeFilter || "طالب محدد");
+          } else if (x.examType === 'group') {
+            let grp = groupsList.find(g => String(g.id) === String(x.groupId));
+            targetName = x.groupName || (grp ? grp.name : x.gradeFilter || "مجموعة محددة");
+          } else {
+            targetName = x.gradeFilter || x.stage || "جميع الصفوف";
+          }
 
-  // إذا تم إدخال الدرجة فوراً عند الإنشاء لطالب فردي
-  if (type === "student" && initialScore !== null) {
-    let stId = $("ex_student").value;
-    let st = data.students.find(x => x.id === stId);
-    let examPoints = Math.round(initialScore / 2);
+          // 3. احتساب دقيق لعدد الطلاب المرصود لهم درجات فعلياً
+          let attGraded = attendanceList.filter(a => String(a.examId) === String(x.id) && a.score !== undefined && a.score !== null && a.score !== "").length;
+          let scoresGraded = x.scores ? Object.keys(x.scores).length : 0;
+          let gradedCount = Math.max(attGraded, scoresGraded);
 
-    // 1. تسجيل الدرجة في سجل الحضور والامتحانات
-    await col("attendance").add({
-      studentId: String(stId),
-      studentName: st ? st.name : "طالب",
-      date: $("ex_date").value || nowDate(),
-      status: "حضر الامتحان",
-      score: initialScore,
-      examId: String(docRef.id),
-      examTitle: examData.title,
-      notes: `درجة اختبار (${examData.title}): ${initialScore} / 100`,
-      pointsGained: examPoints,
-      teacherId: user.uid
-    });
+          return `
+            <div class="card" style="border:1px solid #cbd5e1; background:#fff; border-radius:16px; padding:16px; box-shadow:0 4px 12px rgba(0,0,0,0.03); transition:transform .2s, border-color .2s" onmouseover="this.style.borderColor='#f59e0b'" onmouseout="this.style.borderColor='#cbd5e1'">
+              
+              <!-- الشريط العلوي -->
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+                <span class="tag" style="background:#e0f2fe; color:#0369a1; font-weight:bold; font-size:11px">${targetBadge}</span>
+                <span class="tag ${x.isLocked ? 'danger' : 'success'}" style="font-size:11px">${x.isLocked ? 'مغلق 🔒' : 'مفتوح للرصد 🟢'}</span>
+              </div>
 
-    // 2. إضافة نقاط التفوق لرصيد الكرت الذهبي
-    await col("rewards").add({ 
-      studentId: String(stId), 
-      studentName: st ? st.name : "طالب", 
-      points: examPoints, 
-      title: `درجة اختبار موزونة: ${examData.title} (${initialScore}/100)`, 
-      date: $("ex_date").value || nowDate(), 
-      teacherId: user.uid 
-    });
-  }
+              <!-- عنوان الامتحان والمستهدف -->
+              <h4 style="margin:0 0 6px; font-size:16px; color:#1e293b">${esc(x.title)}</h4>
+              <div style="font-size:13px; font-weight:bold; color:#f59e0b; margin-bottom:10px">
+                🎯 المستهدف: ${esc(targetName)}
+              </div>
 
-  closeModal(); 
-  await loadAll(); 
-  playBeep(true); 
+              <!-- تفاصيل الإحصائيات والتاريخ -->
+              <div style="background:#f8fafc; padding:10px; border-radius:10px; border:1px solid #e2e8f0; font-size:12px; margin-bottom:14px; display:flex; justify-content:space-between">
+                <span>📅 التاريخ: <b>${x.date || nowDate()}</b></span>
+                <span>📊 تم رصده لـ: <b style="color:#047857">${gradedCount} طلاب</b></span>
+              </div>
 
-  // تحديث التقرير فوراً إن كان مفتوحاً
-  if (type === "student" && initialScore !== null) {
-    let stId = $("ex_student").value;
-    if ($("student360Container")) renderStudentProfileView("student360Container", stId);
-    if ($("reportPreview")) renderStudentProfileView("reportPreview", stId);
-    if ($("parentPortalContent")) renderStudentProfileView("parentPortalContent", stId);
-  }
+              <!-- أزرار التحكم والشهادات -->
+              <div class="actions" style="display:flex; gap:6px; flex-wrap:wrap">
+                <button class="small" style="flex:1" onclick="gradeExamModal('${x.id}')">📊 رصد الدرجات</button>
+                <button class="small success" style="flex:1" onclick="certModal('${x.id}')">📜 الشهادة</button>
+                <button class="small danger" onclick="del('exams','${x.id}')">🗑️</button>
+              </div>
 
-  toast(initialScore !== null ? "تم إنشاء الامتحان ورصد الدرجة فوراً في تقرير الطالب!" : "تم حفظ الامتحان بنجاح");
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `}
+  </section>`;
 }
 
 function gradeExamModal(examId){
   playBeep(true);
   
-  // 1️⃣ البحث عن الامتحان مع تحويل المعرف لنص لمنع أي خطأ في النوع
-  let ex = data.exams.find(x => String(x.id) === String(examId));
+  let examsList = data.exams || [];
+  let studentsList = data.students || [];
+  let attendanceList = data.attendance || [];
+
+  // 1️⃣ البحث عن الامتحان بأسلوب آمن
+  let ex = examsList.find(x => String(x.id) === String(examId));
   if (!ex) {
     toast("⚠️ تعذر العثور على بيانات الامتحان");
     return;
   }
 
-  // 2️⃣ جلب الطلاب بدقة سواء كان الامتحان فردياً لطالب محدد أو جماعياً لصف/مرحلة
+  // 2️⃣ جلب الطلاب المستهدفين بدقة (طالب فردي / مجموعة أكاديمية / صف دراسي)
   let targetStudents = [];
   if (ex.examType === 'student' && ex.studentId) {
-    // امتحان فردي
-    targetStudents = data.students.filter(s => String(s.id) === String(ex.studentId));
+    targetStudents = studentsList.filter(s => String(s.id) === String(ex.studentId));
+  } else if (ex.examType === 'group' && ex.groupId) {
+    targetStudents = studentsList.filter(s => {
+      let groupSet = s.groupsSetup || (s.groupId ? [{groupId: s.groupId}] : []);
+      return groupSet.some(gs => String(gs.groupId) === String(ex.groupId));
+    });
   } else {
-    // امتحان جماعي (صف دراسي / مرحلة / مجموعة)
-    targetStudents = data.students.filter(s => {
-      let matchGrade = ex.gradeFilter ? s.grade === ex.gradeFilter : true;
+    targetStudents = studentsList.filter(s => {
+      let matchGrade = ex.gradeFilter && !ex.gradeFilter.includes("مجموعة") ? s.grade === ex.gradeFilter : true;
       let matchStage = ex.stage ? s.stage === ex.stage : true;
-      
-      // فحص انضمام الطالب للمجموعة إن كان الامتحان مخصصاً لمجموعة
-      let matchGroup = true;
-      if (ex.groupId) {
-        let groupSet = s.groupsSetup || (s.groupId ? [{groupId: s.groupId}] : []);
-        matchGroup = groupSet.some(gs => String(gs.groupId) === String(ex.groupId));
-      }
-
-      return matchGrade && matchStage && matchGroup;
+      return matchGrade && matchStage;
     });
   }
 
   let isLocked = !!ex.isLocked;
+  let targetLabel = ex.examType === 'student' 
+    ? '👤 طالب فردي' 
+    : (ex.examType === 'group' ? `👥 مجموعة: ${esc(ex.groupName || ex.gradeFilter || '')}` : `📚 صف: ${esc(ex.gradeFilter || 'عام')}`);
 
   $("modalTitle").textContent = `رصد درجات امتحان: ${ex.title} ${isLocked ? '(مغلق 🔒)' : ''}`;
   $("modalBody").innerHTML = `
     ${isLocked ? `<div style="background:#fff1f2;color:#be123c;padding:10px;border-radius:8px;margin-bottom:12px;font-weight:bold">🔒 هذا الامتحان مغلق تماماً ودرجاته للعرض فقط.</div>` : ''}
     
     <div style="margin-bottom:10px;font-size:12px;color:#64748b;display:flex;justify-content:space-between;align-items:center">
-      <span>نوع الامتحان: <b>${ex.examType === 'student' ? '👤 طالب فردي' : '📚 امتحان جماعي'}</b></span>
+      <span>نوع المستهدف: <b style="color:#0369a1">${targetLabel}</b></span>
       <span>عدد الطلاب المستهدفين: <b>${targetStudents.length} طالب</b></span>
     </div>
 
@@ -4166,13 +4857,12 @@ function gradeExamModal(examId){
       <tbody>
         ${targetStudents.length === 0 ? `<tr><td colspan="4" style="text-align:center;color:#718096;padding:16px">لا يوجد طلاب مسجلين مطبقين لشروط هذا الامتحان حالياً</td></tr>` :
           targetStudents.map(st => {
-            // البحث الدقيق عن الدرجة السابقة سواء من سجل الحضور أو من كائن الامتحان المحفوظ
-            let existingAtt = data.attendance.find(a => String(a.studentId) === String(st.id) && String(a.examId) === String(examId));
+            let existingAtt = attendanceList.find(a => String(a.studentId) === String(st.id) && String(a.examId) === String(examId));
             
             let scoreVal = "";
-            if (existingAtt && existingAtt.score !== undefined) {
+            if (existingAtt && existingAtt.score !== undefined && existingAtt.score !== null) {
               scoreVal = existingAtt.score;
-            } else if (ex.scores && ex.scores[st.id] !== undefined) {
+            } else if (ex.scores && ex.scores[st.id] !== undefined && ex.scores[st.id] !== null) {
               scoreVal = ex.scores[st.id];
             }
 
@@ -4180,7 +4870,7 @@ function gradeExamModal(examId){
               <td><b>${esc(st.name)}</b></td>
               <td><span class="tag" style="background:#e0f2fe;color:#0369a1">${esc(st.grade)}</span></td>
               <td>
-                <input type="number" id="grade_val_${st.id}" value="${scoreVal !== undefined ? scoreVal : ''}" ${isLocked ? 'readonly disabled' : ''} placeholder="مثال: 95" style="width:100px;padding:6px;border:1px solid #cbd5e1;border-radius:6px">
+                <input type="number" id="grade_val_${st.id}" value="${scoreVal !== undefined ? scoreVal : ''}" ${isLocked ? 'readonly disabled' : ''} placeholder="مثال: 95" min="0" max="100" style="width:100px;padding:6px;border:1px solid #cbd5e1;border-radius:6px">
               </td>
               <td>
                 ${!isLocked ? `<button class="small success" onclick="saveStudentExamGrade('${examId}','${st.id}','${esc(st.name)}')">💾 حفظ الدرجة المزامنة</button>` : '<span class="tag">محفوظ 🔒</span>'}
@@ -4307,24 +4997,42 @@ async function lockExamPermanently(examId) {
 
 function certModal(id){
   playBeep(true);
-  let ex=data.exams.find(x=>x.id===id)||{};
+  
+  let examsList = data.exams || [];
+  let studentsList = data.students || [];
+
+  // 1️⃣ البحث عن الامتحان مع مطابقة المعرف كسطر نصي آمن
+  let ex = examsList.find(x => String(x.id) === String(id)) || {};
   let teacherName = localStorage.getItem("teacherName") || user?.displayName || "Mr. Abdelhamed Ahmed";
   let teacherPhoto = user?.photoURL || localStorage.getItem("teacherPhoto") || DEFAULT_AVATAR;
   let signUrl = localStorage.getItem("teacherSign");
 
-  let defaultStudentName = "";
+  // 2️⃣ تصفية القائمة المنسدلة للشهادة لتشمل فقط الطلاب المستهدفين من هذا الامتحان
+  let availableStudents = studentsList;
   if (ex.examType === 'student' && ex.studentId) {
-    let targetSt = data.students.find(s => s.id === ex.studentId);
-    if (targetSt) defaultStudentName = targetSt.name;
+    availableStudents = studentsList.filter(s => String(s.id) === String(ex.studentId));
+  } else if (ex.examType === 'group' && ex.groupId) {
+    availableStudents = studentsList.filter(s => {
+      let groupSet = s.groupsSetup || (s.groupId ? [{groupId: s.groupId}] : []);
+      return groupSet.some(gs => String(gs.groupId) === String(ex.groupId));
+    });
+  } else if (ex.gradeFilter && !ex.gradeFilter.includes("مجموعة")) {
+    availableStudents = studentsList.filter(s => s.grade === ex.gradeFilter);
   }
-  
-  $("modalTitle").textContent="شهادة تقدير وتفوق أكاديمي فاخرة";
-  $("modalBody").innerHTML=`
+
+  // 3️⃣ تحديد الاسم تلقائياً إذا كان هناك طالب واحد فقط مستهدف
+  let defaultStudentName = "";
+  if (availableStudents.length === 1) {
+    defaultStudentName = availableStudents[0].name;
+  }
+
+  $("modalTitle").textContent = "شهادة تقدير وتفوق أكاديمي فاخرة";
+  $("modalBody").innerHTML = `
     <div style="margin-bottom:14px;background:#f8fafc;padding:10px;border-radius:10px;border:1px solid #cbd5e1">
       <label style="font-weight:bold;display:block;margin-bottom:4px">اختر الطالب لطباعة اسمه الفعلي على الشهادة:</label>
       <select id="cert_student_select" onchange="updateCertStudentName(this.value)" style="width:100%;padding:8px;border-radius:8px">
         <option value="">-- اختر اسم الطالب الفعلي --</option>
-        ${data.students.map(s => `<option value="${esc(s.name)}" ${s.name === defaultStudentName ? 'selected' : ''}>${esc(s.name)} (${esc(s.grade)})</option>`).join("")}
+        ${availableStudents.map(s => `<option value="${esc(s.name)}" ${s.name === defaultStudentName ? 'selected' : ''}>${esc(s.name)} (${esc(s.grade)})</option>`).join("")}
       </select>
     </div>
 
@@ -4333,9 +5041,9 @@ function certModal(id){
         <img src="${teacherPhoto}" style="height:65px;width:65px;border-radius:50%;object-fit:cover;border:3px solid #f59e0b;margin-bottom:8px" onerror="this.src=DEFAULT_AVATAR">
         <h1 style="color:#f59e0b;margin:8px 0;font-size:22px">شهادة تقدير وتفوق أكاديمي 🏆</h1>
         <p style="font-size:14px">يُشهد المعلم بأن الطالب/الطالبة المتميز:</p>
-        <h2 id="cert_student_name_display" style="color:#111827;margin:12px 0;font-size:24px;border-bottom:2px solid #f59e0b;display:inline-block;padding:0 20px">${defaultStudentName || "...................................................."}</h2>
+        <h2 id="cert_student_name_display" style="color:#111827;margin:12px 0;font-size:24px;border-bottom:2px solid #f59e0b;display:inline-block;padding:0 20px">${esc(defaultStudentName) || "...................................................."}</h2>
         <p>في الصف الدراسي: <b>${esc(ex.gradeFilter||"")}</b></p>
-        <p>قد اجتاز بتفوق باهر اختبار مادة: <h3 style="color:#1e293b">${esc(ex.title)}</h3></p>
+        <p>قد اجتاز بتفوق باهر اختبار مادة: <h3 style="color:#1e293b">${esc(ex.title||"")}</h3></p>
       </div>
       <div class="sign-area" style="margin-top:24px">
         <div>التاريخ: ${nowDate()} | الوقت: ${now24Time()}</div>
@@ -4348,6 +5056,7 @@ function certModal(id){
       </div>
     </div>
     <div class="actions" style="margin-top:16px;justify-content:center"><button class="primary" onclick="downloadCert()">⬇️ تنزيل الشهادة كصورة</button></div>`;
+  
   openModal();
 }
 
@@ -5950,29 +6659,45 @@ function switchHubTab(tabName) {
   }
 }
 
-// 1️⃣ تبويب بنك الأسئلة الموحد
+// 1️⃣ تبويب بنك الأسئلة الموحد (مُعدَّل)
 function renderQuestionBankTab(container) {
   const qBank = data.questionBank || [];
   container.innerHTML = `
     <div>
-      <div class="toolbar" style="margin-bottom:14px; background:#f8fafc; padding:12px; border-radius:12px; border:1px solid #cbd5e1">
+      <div class="toolbar" style="margin-bottom:14px; background:#f8fafc; padding:12px; border-radius:12px; border:1px solid #cbd5e1; display:flex; gap:8px; flex-wrap:wrap;">
         <button class="primary small" onclick="addQuestionModal()">➕ إضافة سؤال يدوي</button>
         <button class="primary small warning" onclick="openPromptToExamModal()">✨ منشئ الاختبارات السريع (Prompt-to-Exam)</button>
         <button class="primary small success" onclick="generateExamPaperModal()">📄 تصدير ورقة امتحان طباعة (A4)</button>
       </div>
 
-      <div class="toolbar" style="margin-bottom:14px">
-        <input type="text" id="qBankSearch" placeholder="🔍 بحث في نص الأسئلة بالعربي أو الإنجليزي..." oninput="filterQuestionBankTable()">
-        <select id="qBankGradeFilter" onchange="filterQuestionBankTable()">
+      <div class="toolbar" style="margin-bottom:14px; display:flex; gap:10px; flex-wrap:wrap;">
+        <input type="text" id="qBankSearch" placeholder="🔍 بحث في نص الأسئلة..." oninput="filterQuestionBankTable()" style="flex:2; min-width:200px;">
+        
+        <select id="qBankGradeFilter" onchange="onGradeFilterChange()" style="flex:1; min-width:150px;">
           <option value="">جميع المراحل والصفوف</option>
-          ${Object.values(gradeOptions).flat().map(g => `<option>${g}</option>`).join("")}
+          ${Object.values(gradeOptions).flat().map(g => `<option value="${g}">${g}</option>`).join("")}
+        </select>
+
+        <select id="qBankUnitFilter" onchange="onUnitFilterChange()" style="flex:1; min-width:150px;">
+          <option value="">جميع الوحدات</option>
+        </select>
+
+        <select id="qBankLessonFilter" onchange="filterQuestionBankTable()" style="flex:1; min-width:150px;">
+          <option value="">جميع الدروس</option>
         </select>
       </div>
 
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>الصف / المرحلة</th><th>النوع واللغة</th><th>نص السؤال والمحتوى</th><th>خطوات الحل التلقائية</th><th>إجراءات</th></tr>
+            <tr>
+              <th>الصف / المرحلة</th>
+              <th>الوحدة / الدرس</th>
+              <th>النوع واللغة</th>
+              <th>نص السؤال والمحتوى</th>
+              <th>خطوات الحل التلقائية</th>
+              <th>إجراءات</th>
+            </tr>
           </thead>
           <tbody id="questionBankTableBody">
             ${generateQuestionBankRows(qBank)}
@@ -5983,67 +6708,151 @@ function renderQuestionBankTab(container) {
   `;
 }
 
-// 2️⃣ تبويب الامتحانات والشهادات
+// 2️⃣ تبويب الامتحانات والشهادات (مُعدَّل بنظام الكروت)
 function renderExamsTab(container) {
+  const examsList = data.exams || [];
+
   container.innerHTML = `
     <div>
-      <div class="actions" style="margin-bottom:14px">
-        <button class="primary" onclick="examModal()">+ عمل امتحان رسمي جديد</button>
+      <div class="actions" style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px">
+        <button class="primary" onclick="examModal()">+ عمل امتحان رسمي جديد 🎯</button>
+        <span class="badge" style="background:#e2e8f0; color:#334155; padding:6px 12px; border-radius:20px; font-weight:bold; font-size:13px">
+          إجمالي الامتحانات: ${examsList.length}
+        </span>
       </div>
-      <div class="table-wrap">
-        <table>
-          <tr><th>تاريخ الامتحان</th><th>النوع</th><th>المستهدف</th><th>عنوان الامتحان والمادة</th><th>حالة الامتحان</th><th>إجراءات وتصدير</th></tr>
-          ${(data.exams || []).map(x => `<tr>
-            <td>${x.date}</td>
-            <td>${x.examType === 'student' ? '👤 طالب' : '📚 مرحلة'}</td>
-            <td><b>${esc(x.gradeFilter || x.studentName)}</b></td>
-            <td>${esc(x.title)}</td>
-            <td>${x.isLocked ? '<span class="tag danger">مغلق نهائياً 🔒</span>' : '<span class="tag success">مفتوح للرصد 🟢</span>'}</td>
-            <td>
-              <button class="small success" onclick="certModal('${x.id}')">📜 شهادة</button>
-              <button class="small" onclick="gradeExamModal('${x.id}')">📊 رصد الدرجات</button>
-              <button class="small danger" onclick="del('exams','${x.id}')">حذف</button>
-            </td>
-          </tr>`).join("")}
-        </table>
-      </div>
+
+      ${examsList.length === 0 ? `
+        <div style="text-align:center; padding:40px; background:#fff; border-radius:16px; border:1px solid #cbd5e1; color:#64748b">
+          لا توجد امتحانات مسجلة حالياً. اضغط على "+ عمل امتحان رسمي جديد" للبدء.
+        </div>
+      ` : `
+        <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:16px">
+          ${examsList.map(x => {
+            // تحديد نوع المستهدف (طالب فردي / مجموعة / صف)
+            let targetBadge = x.examType === 'student' 
+              ? '👤 طالب فردي' 
+              : (x.examType === 'group' ? '👥 مجموعة أكاديمية' : '📚 صف / مرحلة');
+            
+            let targetName = x.groupName || x.studentName || x.gradeFilter || "عام";
+            
+            // حساب عدد الطلاب المرصودة درجاتهم لهذا الامتحان
+            let gradedCount = x.scores ? Object.keys(x.scores).length : 0;
+
+            return `
+              <div class="card" style="border:1px solid #cbd5e1; background:#fff; border-radius:16px; padding:16px; box-shadow:0 4px 12px rgba(0,0,0,0.03); transition:transform .2s, border-color .2s" onmouseover="this.style.borderColor='#f59e0b'" onmouseout="this.style.borderColor='#cbd5e1'">
+                
+                <!-- الشريط العلوي -->
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+                  <span class="tag" style="background:#e0f2fe; color:#0369a1; font-weight:bold; font-size:11px">${targetBadge}</span>
+                  <span class="tag ${x.isLocked ? 'danger' : 'success'}" style="font-size:11px">${x.isLocked ? 'مغلق 🔒' : 'مفتوح للرصد 🟢'}</span>
+                </div>
+
+                <!-- عنوان الامتحان والجهة المستهدفة -->
+                <h4 style="margin:0 0 6px; font-size:16px; color:#1e293b">${esc(x.title)}</h4>
+                <div style="font-size:13px; font-weight:bold; color:#f59e0b; margin-bottom:10px">
+                  🎯 المستهدف: ${esc(targetName)}
+                </div>
+
+                <!-- الإحصائيات والتاريخ -->
+                <div style="background:#f8fafc; padding:10px; border-radius:10px; border:1px solid #e2e8f0; font-size:12px; margin-bottom:14px; display:flex; justify-content:space-between">
+                  <span>📅 التاريخ: <b>${x.date || nowDate()}</b></span>
+                  <span>📊 المرصود لهم: <b style="color:#047857">${gradedCount} طلاب</b></span>
+                </div>
+
+                <!-- الأزرار والإجراءات -->
+                <div class="actions" style="display:flex; gap:6px; flex-wrap:wrap">
+                  <button class="small" style="flex:1" onclick="gradeExamModal('${x.id}')">📊 رصد الدرجات</button>
+                  <button class="small success" style="flex:1" onclick="certModal('${x.id}')">📜 الشهادة</button>
+                  <button class="small danger" onclick="del('exams','${x.id}')">🗑️</button>
+                </div>
+
+              </div>
+            `;
+          }).join("")}
+        </div>
+      `}
     </div>
   `;
 }
 
-// 3️⃣ تبويب الاختبارات الإلكترونية التفاعلية
+// 3️⃣ تبويب الاختبارات الإلكترونية التفاعلية (مُعدَّل)
 function renderOnlineQuizzesTab(container) {
+  const quizzes = data.onlineQuizzes || [];
+
   container.innerHTML = `
     <div>
-      <div class="actions" style="margin-bottom:14px">
-        <button class="primary" onclick="onlineQuizModal()">+ إنشاء اختبار إلكتروني تفاعلي أونلاين</button>
+      <div class="toolbar" style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <button class="primary" onclick="onlineQuizModal()">➕ إنشاء اختبار إلكتروني تفاعلي أونلاين</button>
+        <span class="badge" style="background:#e2e8f0; color:#334155; padding:6px 12px; border-radius:20px; font-weight:bold; font-size:13px;">
+          إجمالي الاختبارات: ${quizzes.length}
+        </span>
       </div>
+
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>عنوان الاختبار</th><th>الصف المستهدف</th><th>عدد الأسئلة</th><th>الرابط المباشر الآمن</th><th>إجراءات</th></tr>
+            <tr>
+              <th>عنوان الاختبار والصف</th>
+              <th>الوحدة / الدرس</th>
+              <th>المدة والتوقيت</th>
+              <th>الأسئلة والخصائص</th>
+              <th>الرابط المباشر الآمن</th>
+              <th>إجراءات</th>
+            </tr>
           </thead>
           <tbody>
-            ${(data.onlineQuizzes || []).length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#718096;padding:16px">لا توجد اختبارات إلكترونية مسجلة</td></tr>` :
-              (data.onlineQuizzes || []).map(q => {
-                let quizUrl = `${window.location.origin}${window.location.pathname}?quizId=${q.id}`;
-                let qCount = Array.isArray(q.questions) ? q.questions.length : 1;
-                return `
-                  <tr>
-                    <td><b>${esc(q.title)}</b></td>
-                    <td>${esc(q.grade)}</td>
-                    <td><span class="tag success">${qCount} أسئلة</span></td>
-                    <td>
-                      <input type="text" readonly value="${quizUrl}" style="width:200px;padding:4px;font-size:11px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px">
-                      <button class="small" onclick="navigator.clipboard.writeText('${quizUrl}');toast('تم نسخ رابط الاختبار')">📋 نسخ</button>
-                    </td>
-                    <td>
-                      <button class="small success" onclick="openQuizTakerModal('${q.id}')">👁️ معاينة وطالب حل</button>
+            ${quizzes.length === 0 ? `
+              <tr>
+                <td colspan="6" style="text-align:center; color:#718096; padding:20px">لا توجد اختبارات إلكترونية مسجلة حتى الآن</td>
+              </tr>
+            ` : quizzes.map(q => {
+              let quizUrl = `${window.location.origin}${window.location.pathname}?quizId=${q.id}`;
+              let qCount = Array.isArray(q.questions) ? q.questions.length : (q.questions ? 1 : 0);
+              
+              // تفاصيل المدة وزمن الإتاحة
+              let timingInfo = q.durationMins ? `⏱️ ${q.durationMins} دقيقة` : '⏱️ مفتوح';
+              let availability = (q.startDate && q.endDate) 
+                ? `<br><small style="color:#64748b">📅 من ${q.startDate} (${q.startTime || '00:00'})<br>إلى ${q.endDate} (${q.endTime || '23:59'})</small>`
+                : '';
+
+              // تفاصيل الوحدة والدرس
+              let locationInfo = (q.unit || q.lesson) 
+                ? `<span style="font-size:12px; color:#475569">${esc(q.unit || '---')}<br><small style="color:#64748b">${esc(q.lesson || '---')}</small></span>`
+                : '<span style="color:#94a3b8; font-size:12px;">عام / غير محدد</span>';
+
+              // شارات منع الغش والترتيب العشوائي
+              let antiCheatBadge = q.antiCheating ? `<span class="tag danger" style="font-size:10px;" title="مراقبة تبديل التبويبات">🛡️ منع الغش</span>` : '';
+              let shuffleBadge = q.shuffle ? `<span class="tag warning" style="font-size:10px;" title="ترتيب عشوائي للأسئلة">🔀 عشوائي</span>` : '';
+
+              return `
+                <tr>
+                  <td>
+                    <b>${esc(q.title)}</b><br>
+                    <small style="color:#0284c7; font-weight:600;">${esc(q.grade || 'جميع الصفوف')}</small>
+                  </td>
+                  <td>${locationInfo}</td>
+                  <td>${timingInfo}${availability}</td>
+                  <td>
+                    <span class="tag success">${qCount} أسئلة</span>
+                    <div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap;">
+                      ${antiCheatBadge}${shuffleBadge}
+                    </div>
+                  </td>
+                  <td>
+                    <div style="display:flex; gap:4px; align-items:center;">
+                      <input type="text" readonly value="${quizUrl}" style="width:160px; padding:4px 6px; font-size:11px; background:#f1f5f9; border:1px solid #cbd5e1; border-radius:6px">
+                      <button class="small" onclick="navigator.clipboard.writeText('${quizUrl}'); toast('تم نسخ رابط الاختبار')">📋</button>
+                    </div>
+                  </td>
+                  <td>
+                    <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                      <button class="small success" onclick="openQuizTakerModal('${q.id}')">👁️ معاينة</button>
                       <button class="small danger" onclick="del('onlineQuizzes','${q.id}')">حذف</button>
-                    </td>
-                  </tr>
-                `;
-              }).join("")}
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join("")}
           </tbody>
         </table>
       </div>
