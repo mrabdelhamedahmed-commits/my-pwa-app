@@ -4542,10 +4542,9 @@ function examsPage(c){
   </section>`;
 }
 
-// 1️⃣ دالة فتح نافذة إنشاء امتحان جديد (معدلة مع الحفاظ على كل العناصر الأصلية)
 function examModal(){
   playBeep(true);
-  $("modalTitle").textContent = "إنشاء امتحان جديدورصد الدرجات";
+  $("modalTitle").textContent = "إنشاء امتحان جديد";
   $("modalBody").innerHTML = `<form class="form" onsubmit="saveDynamicExam(event)">
     <label class="full">نوع الامتحان المستهدف: 
       <select id="ex_type" onchange="toggleExamTargetType()">
@@ -4564,102 +4563,35 @@ function examModal(){
         </div>
         <div>
           <label>الصف المستهدف:</label>
-          <select id="ex_grade" onchange="updateExamGroupDropdown()"></select>
+          <select id="ex_grade"></select>
         </div>
       </div>
     </div>
 
-    <!-- 2. اختيار المجموعة الأكاديمية (مفلترة حسب الصف + عرض الطلاب) -->
+    <!-- 2. اختيار المجموعة الأكاديمية -->
     <div id="groupTargetGroup" class="full hidden">
-      <label style="margin-top:8px;display:block">اختر المجموعة الأكاديمية:</label>
-      <select id="ex_group" class="full" onchange="renderGroupStudentsPreview(this.value)">
-        <option value="">-- اختر المجموعة --</option>
-      </select>
-      <!-- حاوية قائمة طلاب المجموعة لرصد درجاتهم فوراً -->
-      <div id="groupStudentsPreviewBox" style="margin-top:10px"></div>
+      <label>اختر المجموعة الأكاديمية:</label>
+      <select id="ex_group" class="full">${(data.groups || []).map(g => `<option value="${g.id}">${esc(g.name)} (${esc(g.grade)})</option>`).join("")}</select>
     </div>
 
     <!-- 3. اختيار الطالب الفردي -->
     <div id="studentTargetGroup" class="full hidden">
       <label>اختر الطالب المحدد:</label>
-      <select id="ex_student" class="full">
-        ${(data.students || []).map(s => `<option value="${s.id}">${esc(s.name)} (${esc(s.grade)})</option>`).join("")}
-      </select>
+      <select id="ex_student" class="full">${(data.students || []).map(s => `<option value="${s.id}">${esc(s.name)} (${esc(s.grade)})</option>`).join("")}</select>
       <div style="margin-top:10px">
         <label style="font-weight:bold;color:#047857">درجة الطالب (من 100) - لرصدها فوراً في تقرير ولي الأمر (اختياري):</label>
         <input type="number" id="ex_student_score" placeholder="مثال: 95 (اتركها فارغة إذا أردت رصدها لاحقاً)" min="0" max="100">
       </div>
     </div>
 
-    <input id="ex_title" placeholder="عنوان الامتحان والمادة" required class="full" style="margin-top:10px">
+    <input id="ex_title" placeholder="عنوان الامتحان والمادة" required class="full">
     <input id="ex_date" type="date" value="${nowDate()}" class="full">
-    <button class="primary full" style="margin-top:12px">حفظ الامتحان ورصد الدرجة</button>
+    <button class="primary full" style="margin-top:10px">حفظ الامتحان ورصد الدرجة</button>
   </form>`;
   
   openModal(); 
   updateExamGradeDropdown();
   toggleExamTargetType(); // تحديث حالة الإظهار والإخفاء فور فتح المودال
-}
-
-// 2️⃣ دالة توفيق المجموعات حسب الصف المختار
-function updateExamGroupDropdown(){
-  let selectedGrade = $("ex_grade") ? $("ex_grade").value : "";
-  let groupSelect = $("ex_group");
-  if(!groupSelect) return;
-
-  let filteredGroups = (data.groups || []).filter(g => !selectedGrade || g.grade === selectedGrade);
-
-  groupSelect.innerHTML = `<option value="">-- اختر المجموعة (${filteredGroups.length} مجموعات متاحة) --</option>` +
-    filteredGroups.map(g => `<option value="${g.id}">👥 مجموعة: ${esc(g.name)} (${esc(g.grade)})</option>`).join("");
-
-  if(filteredGroups.length > 0){
-    groupSelect.value = filteredGroups[0].id;
-    renderGroupStudentsPreview(filteredGroups[0].id);
-  } else {
-    let box = $("groupStudentsPreviewBox");
-    if(box) box.innerHTML = `<div class="muted" style="text-align:center;padding:10px;background:#f8fafc;border-radius:8px;font-size:12px">لا توجد مجموعات مسجلة لهذا الصف</div>`;
-  }
-}
-
-// 3️⃣ دالة عرض أسماء طلاب المجموعة المختارة فوراً لرصد الدرجات
-function renderGroupStudentsPreview(groupId){
-  let box = $("groupStudentsPreviewBox");
-  if(!box) return;
-
-  if(!groupId){
-    box.innerHTML = "";
-    return;
-  }
-
-  let groupObj = (data.groups || []).find(g => String(g.id) === String(groupId));
-  let groupStudents = (data.students || []).filter(s => {
-    let groupSet = s.groupsSetup || (s.groupId ? [{groupId: s.groupId}] : []);
-    return groupSet.some(gs => String(gs.groupId) === String(groupId));
-  });
-
-  if(groupStudents.length === 0){
-    box.innerHTML = `<div style="background:#fffbeb;padding:8px;border-radius:8px;border:1px solid #fde68a;color:#b45309;font-size:12px;text-align:center">⚠️ لا يوجد طلاب منضمين لمجموعة (${esc(groupObj?.name || '')}) حتى الآن.</div>`;
-    return;
-  }
-
-  box.innerHTML = `
-    <div style="background:#f0fdf4;padding:8px 10px;border-radius:8px;border:1px solid #bbf7d0;margin-bottom:8px">
-      <b style="color:#166534;font-size:12px">👥 طلاب مجموعة: ${esc(groupObj?.name || '')} (${groupStudents.length} طلاب)</b>
-    </div>
-    <div class="table-wrap" style="max-height:180px;overflow-y:auto">
-      <table>
-        <tr style="background:#f1f5f9"><th>اسم الطالب</th><th>الدرجة (من 100)</th></tr>
-        ${groupStudents.map(st => `
-          <tr>
-            <td><b>${esc(st.name)}</b></td>
-            <td>
-              <input type="number" class="exam-student-score-input" data-studentid="${st.id}" data-studentname="${esc(st.name)}" placeholder="مثال: 95" min="0" max="100" style="width:100px;padding:4px;border:1px solid #cbd5e1;border-radius:6px;font-weight:bold">
-            </td>
-          </tr>
-        `).join("")}
-      </table>
-    </div>
-  `;
 }
 
 function toggleExamTargetType(){
@@ -4691,17 +4623,15 @@ function toggleExamTargetType(){
 async function saveDynamicExam(e){
   e.preventDefault();
   let type = $("ex_type").value;
-  let titleVal = $("ex_title").value.trim();
-  let dateVal = $("ex_date").value;
-
   let examData = { 
     examType: type, 
-    title: titleVal, 
-    date: dateVal, 
+    title: $("ex_title").value.trim(), 
+    date: $("ex_date").value, 
     isLocked: false, 
-    scores: {},
     teacherId: user.uid 
   };
+
+  let initialScore = null;
 
   if(type === "student"){
     let stId = $("ex_student").value; 
@@ -4710,13 +4640,10 @@ async function saveDynamicExam(e){
     examData.studentName = st ? st.name : "طالب"; 
     examData.gradeFilter = st ? st.grade : "طالب فردي";
     
-    // دعم الخانة الفردية
     let scoreInput = $("ex_student_score") ? $("ex_student_score").value.trim() : "";
     if (scoreInput !== "") {
-      let scoreNum = Number(scoreInput);
-      if(!isNaN(scoreNum)) {
-        examData.scores[stId] = scoreNum;
-      }
+      initialScore = Number(scoreInput);
+      examData.scores = { [stId]: initialScore };
     }
   } else if(type === "group"){
     let grpId = $("ex_group").value;
@@ -4724,63 +4651,39 @@ async function saveDynamicExam(e){
     examData.groupId = grpId;
     examData.groupName = grp ? grp.name : "مجموعة";
     examData.gradeFilter = grp ? `مجموعة: ${grp.name}` : "مجموعة";
-    if($("ex_stage")) examData.stage = $("ex_stage").value;
   } else {
-    if($("ex_stage")) examData.stage = $("ex_stage").value; 
-    if($("ex_grade")) examData.gradeFilter = $("ex_grade").value;
+    examData.stage = $("ex_stage").value; 
+    examData.gradeFilter = $("ex_grade").value;
   }
 
-  // 1️⃣ قراءة كافة درجات طلاب المجموعة أو الصف المدخلة من الجدول
-  let scoreInputs = document.querySelectorAll(".exam-student-score-input");
-  scoreInputs.forEach(inp => {
-    let stId = inp.dataset.studentid;
-    let valStr = inp.value.trim();
-
-    if(stId && valStr !== ""){
-      let numVal = Number(valStr);
-      if(!isNaN(numVal) && numVal >= 0){
-        examData.scores[stId] = numVal;
-      }
-    }
-  });
-
-  // تجميع قائمة الطلاب المرفق لهم درجات
-  let gradedStudentsList = [];
-  Object.keys(examData.scores).forEach(stId => {
-    let st = (data.students || []).find(x => String(x.id) === String(stId));
-    gradedStudentsList.push({
-      id: stId,
-      name: st ? st.name : "طالب",
-      score: examData.scores[stId]
-    });
-  });
-
-  // 2️⃣ حفظ بيانات الامتحان في قاعدة البيانات
+  // 1️⃣ حفظ بيانات الامتحان في قاعدة البيانات
   let docRef = await col("exams").add(examData);
 
-  // 3️⃣ تسجيل الحضور والدرجات والنقاط فوراً لكل طالب تم رصد درجته (لتظهر في بوابة ولي الأمر)
-  for(let stItem of gradedStudentsList){
-    let examPoints = Math.round(stItem.score / 2);
+  // 2️⃣ إذا تم إدخال الدرجة فوراً عند الإنشاء لطالب فردي
+  if (type === "student" && initialScore !== null) {
+    let stId = $("ex_student").value;
+    let st = (data.students || []).find(x => String(x.id) === String(stId));
+    let examPoints = Math.round(initialScore / 2);
 
     await col("attendance").add({
-      studentId: String(stItem.id),
-      studentName: stItem.name,
-      date: dateVal || nowDate(),
+      studentId: String(stId),
+      studentName: st ? st.name : "طالب",
+      date: $("ex_date").value || nowDate(),
       status: "حضر الامتحان",
-      score: stItem.score,
+      score: initialScore,
       examId: String(docRef.id),
-      examTitle: titleVal,
-      notes: `درجة اختبار (${titleVal}): ${stItem.score} / 100`,
+      examTitle: examData.title,
+      notes: `درجة اختبار (${examData.title}): ${initialScore} / 100`,
       pointsGained: examPoints,
       teacherId: user.uid
     });
 
     await col("rewards").add({ 
-      studentId: String(stItem.id), 
-      studentName: stItem.name, 
+      studentId: String(stId), 
+      studentName: st ? st.name : "طالب", 
       points: examPoints, 
-      title: `درجة اختبار موزونة: ${titleVal} (${stItem.score}/100)`, 
-      date: dateVal || nowDate(), 
+      title: `درجة اختبار موزونة: ${examData.title} (${initialScore}/100)`, 
+      date: $("ex_date").value || nowDate(), 
       teacherId: user.uid 
     });
   }
@@ -4789,11 +4692,10 @@ async function saveDynamicExam(e){
   await loadAll(); 
   playBeep(true); 
 
-  let hasScores = gradedStudentsList.length > 0;
-  toast(hasScores ? `تم إنشاء الامتحان ورصد درجات (${gradedStudentsList.length}) طلاب فوراً! 🚀` : "تم حفظ الامتحان بنجاح 🚀");
+  toast(initialScore !== null ? "تم إنشاء الامتحان ورصد الدرجة فوراً!" : "تم حفظ الامتحان بنجاح 🚀");
 
-  // ⚡ 4️⃣ فتح شاشة رصد الدرجات تلقائياً إذا لم يتم إدخال درجات عند الإنشاء
-  if (!hasScores) {
+  // ⚡ 3️⃣ فتح شاشة رصد الدرجات تلقائياً بعد حفظ امتحان المجموعة أو الصف
+  if (type !== "student" || initialScore === null) {
     setTimeout(() => {
       gradeExamModal(docRef.id);
     }, 200);
@@ -4824,34 +4726,11 @@ function examsPage(c){
   let studentsList = data.students || [];
   let groupsList = data.groups || [];
 
-  // 1️⃣ تجميع امتحانات الطلاب الفرديين في بطاقة موحدة لكل طالب
-  let individualStudentsMap = {};
-  let groupAndStageExams = [];
-
-  examsList.forEach(x => {
-    if (x.examType === 'student' && x.studentId) {
-      if (!individualStudentsMap[x.studentId]) {
-        let stObj = studentsList.find(s => String(s.id) === String(x.studentId));
-        individualStudentsMap[x.studentId] = {
-          studentId: x.studentId,
-          studentName: x.studentName || (stObj ? stObj.name : "طالب"),
-          grade: stObj ? stObj.grade : (x.gradeFilter || "—"),
-          exams: []
-        };
-      }
-      individualStudentsMap[x.studentId].exams.push(x);
-    } else {
-      groupAndStageExams.push(x);
-    }
-  });
-
-  let individualStudentCards = Object.values(individualStudentsMap);
-
   c.innerHTML = `<section class="section">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
       <div>
         <h3 style="margin:0;color:#1e293b">📝 إدارة الامتحانات والشهادات الفاخرة</h3>
-        <p class="muted" style="margin:4px 0 0">بطاقات موحدة للطلاب الفرديين وكروت مخصصة للمجموعات والمراحل</p>
+        <p class="muted" style="margin:4px 0 0">عرض كروت الامتحانات المخصصة للطلاب والمجموعات والمراحل الدراسية</p>
       </div>
       <button class="primary" onclick="examModal()">+ عمل امتحان جديد 🎯</button>
     </div>
@@ -4861,58 +4740,26 @@ function examsPage(c){
         لا توجد امتحانات مسجلة حالياً. اضغط على "+ عمل امتحان جديد" للبدء.
       </div>
     ` : `
-      <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px">
-        
-        <!-- 👤 1. بطاقات الطلاب الفرديين الموحدة (Student Cards) -->
-        ${individualStudentCards.map(stCard => `
-          <div class="card" style="border:2px solid #3b82f6; background:#fff; border-radius:16px; padding:16px; box-shadow:0 4px 15px rgba(59,130,246,0.08)">
-            
-            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #f1f5f9; padding-bottom:8px; margin-bottom:10px">
-              <div>
-                <b style="font-size:16px; color:#1e293b; display:block">${esc(stCard.studentName)}</b>
-                <span style="font-size:11px; color:#64748b">الصف: ${esc(stCard.grade)}</span>
-              </div>
-              <span class="tag" style="background:#dbeafe; color:#1e40af; font-weight:bold; font-size:11px">👤 طالب فردي (${stCard.exams.length} امتحانات)</span>
-            </div>
-
-            <!-- جدول امتحانات الطالب الفردية -->
-            <div class="table-wrap" style="max-height:180px; overflow-y:auto; margin-bottom:12px">
-              <table style="width:100%; font-size:12px">
-                <tr style="background:#f8fafc"><th>الامتحان</th><th>الدرجة</th><th>إجراء</th></tr>
-                ${stCard.exams.map(ex => {
-                  let attLog = attendanceList.find(a => String(a.studentId) === String(stCard.studentId) && String(a.examId) === String(ex.id));
-                  let scoreVal = (attLog && attLog.score !== undefined && attLog.score !== null) 
-                    ? attLog.score 
-                    : (ex.scores && ex.scores[stCard.studentId] !== undefined ? ex.scores[stCard.studentId] : "—");
-                  
-                  return `
-                    <tr>
-                      <td><b>${esc(ex.title)}</b><br><small class="muted">${ex.date || ''}</small></td>
-                      <td><b style="color:#047857">${scoreVal !== "—" ? scoreVal + " / 100" : "غير مرصود"}</b></td>
-                      <td>
-                        <button class="small success" style="padding:2px 6px" onclick="certModal('${ex.id}')" title="شهادة">📜</button>
-                        <button class="small danger" style="padding:2px 6px" onclick="del('exams','${ex.id}')" title="حذف">🗑️</button>
-                      </td>
-                    </tr>
-                  `;
-                }).join("")}
-              </table>
-            </div>
-
-            <button class="primary small full" style="background:#2563eb" onclick="openAddExamForSpecificStudentModal('${stCard.studentId}')">+ إضافة امتحان جديد لـ ${esc(stCard.studentName)}</button>
-
-          </div>
-        `).join("")}
-
-        <!-- 👥 2. بطاقات امتحانات المجموعات والصفوف -->
-        ${groupAndStageExams.map(x => {
-          let targetBadge = x.examType === 'group' ? '👥 مجموعة أكاديمية' : '📚 صف دراسي';
+      <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:16px">
+        ${examsList.map(x => {
+          // 1. تحديد نوع المستهدف والشارة المناسبة
+          let targetBadge = x.examType === 'student' 
+            ? '👤 طالب فردي' 
+            : (x.examType === 'group' ? '👥 مجموعة أكاديمية' : '📚 صف دراسي');
           
-          let grp = groupsList.find(g => String(g.id) === String(x.groupId));
-          let targetName = x.examType === 'group' 
-            ? (x.groupName || (grp ? grp.name : x.gradeFilter || "مجموعة محددة"))
-            : (x.gradeFilter || x.stage || "جميع الصفوف");
+          // 2. تجنب فقدان اسم المستهدف المخصص
+          let targetName = "عام";
+          if (x.examType === 'student') {
+            let st = studentsList.find(s => String(s.id) === String(x.studentId));
+            targetName = x.studentName || (st ? st.name : x.gradeFilter || "طالب محدد");
+          } else if (x.examType === 'group') {
+            let grp = groupsList.find(g => String(g.id) === String(x.groupId));
+            targetName = x.groupName || (grp ? grp.name : x.gradeFilter || "مجموعة محددة");
+          } else {
+            targetName = x.gradeFilter || x.stage || "جميع الصفوف";
+          }
 
+          // 3. احتساب دقيق لعدد الطلاب المرصود لهم درجات فعلياً
           let attGraded = attendanceList.filter(a => String(a.examId) === String(x.id) && a.score !== undefined && a.score !== null && a.score !== "").length;
           let scoresGraded = x.scores ? Object.keys(x.scores).length : 0;
           let gradedCount = Math.max(attGraded, scoresGraded);
@@ -4920,21 +4767,25 @@ function examsPage(c){
           return `
             <div class="card" style="border:1px solid #cbd5e1; background:#fff; border-radius:16px; padding:16px; box-shadow:0 4px 12px rgba(0,0,0,0.03); transition:transform .2s, border-color .2s" onmouseover="this.style.borderColor='#f59e0b'" onmouseout="this.style.borderColor='#cbd5e1'">
               
+              <!-- الشريط العلوي -->
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
                 <span class="tag" style="background:#e0f2fe; color:#0369a1; font-weight:bold; font-size:11px">${targetBadge}</span>
                 <span class="tag ${x.isLocked ? 'danger' : 'success'}" style="font-size:11px">${x.isLocked ? 'مغلق 🔒' : 'مفتوح للرصد 🟢'}</span>
               </div>
 
+              <!-- عنوان الامتحان والمستهدف -->
               <h4 style="margin:0 0 6px; font-size:16px; color:#1e293b">${esc(x.title)}</h4>
               <div style="font-size:13px; font-weight:bold; color:#f59e0b; margin-bottom:10px">
                 🎯 المستهدف: ${esc(targetName)}
               </div>
 
+              <!-- تفاصيل الإحصائيات والتاريخ -->
               <div style="background:#f8fafc; padding:10px; border-radius:10px; border:1px solid #e2e8f0; font-size:12px; margin-bottom:14px; display:flex; justify-content:space-between">
                 <span>📅 التاريخ: <b>${x.date || nowDate()}</b></span>
                 <span>📊 تم رصده لـ: <b style="color:#047857">${gradedCount} طلاب</b></span>
               </div>
 
+              <!-- أزرار التحكم والشهادات -->
               <div class="actions" style="display:flex; gap:6px; flex-wrap:wrap">
                 <button class="small" style="flex:1" onclick="gradeExamModal('${x.id}')">📊 رصد الدرجات</button>
                 <button class="small success" style="flex:1" onclick="certModal('${x.id}')">📜 الشهادة</button>
@@ -4944,27 +4795,11 @@ function examsPage(c){
             </div>
           `;
         }).join("")}
-
       </div>
     `}
   </section>`;
 }
 
-// 💡 دالة مساعدة لفتح مودال إنشاء امتحان مخصص لطالب محدد مباشرة من بطاقته
-function openAddExamForSpecificStudentModal(studentId){
-  examModal();
-  setTimeout(() => {
-    if($("ex_type")) {
-      $("ex_type").value = "student";
-      toggleExamTargetType();
-    }
-    if($("ex_student")) {
-      $("ex_student").value = studentId;
-    }
-  }, 100);
-}
-
-// 1️⃣ دالة عرض نافذة رصد الدرجات للامتحان
 function gradeExamModal(examId){
   playBeep(true);
   
@@ -4972,14 +4807,14 @@ function gradeExamModal(examId){
   let studentsList = data.students || [];
   let attendanceList = data.attendance || [];
 
-  // البحث عن الامتحان
+  // 1️⃣ البحث عن الامتحان بأسلوب آمن
   let ex = examsList.find(x => String(x.id) === String(examId));
   if (!ex) {
     toast("⚠️ تعذر العثور على بيانات الامتحان");
     return;
   }
 
-  // جلب الطلاب المستهدفين بدقة (طالب فردي / مجموعة أكاديمية / صف دراسي)
+  // 2️⃣ جلب الطلاب المستهدفين بدقة (طالب فردي / مجموعة أكاديمية / صف دراسي)
   let targetStudents = [];
   if (ex.examType === 'student' && ex.studentId) {
     targetStudents = studentsList.filter(s => String(s.id) === String(ex.studentId));
@@ -4999,22 +4834,22 @@ function gradeExamModal(examId){
   let isLocked = !!ex.isLocked;
   let targetLabel = ex.examType === 'student' 
     ? '👤 طالب فردي' 
-    : (ex.examType === 'group' ? `👥 مجموعة: ${esc(xGroupTitle(ex))}` : `📚 صف: ${esc(ex.gradeFilter || 'عام')}`);
+    : (ex.examType === 'group' ? `👥 مجموعة: ${esc(ex.groupName || ex.gradeFilter || '')}` : `📚 صف: ${esc(ex.gradeFilter || 'عام')}`);
 
   $("modalTitle").textContent = `رصد درجات امتحان: ${ex.title} ${isLocked ? '(مغلق 🔒)' : ''}`;
   $("modalBody").innerHTML = `
-    ${isLocked ? `<div style="background:#fff1f2;color:#be123c;padding:10px;border-radius:8px;margin-bottom:12px;font-weight:bold;font-size:12px">🔒 هذا الامتحان مغلق تماماً ودرجاته نهائية ومكسورة للتعديل.</div>` : ''}
+    ${isLocked ? `<div style="background:#fff1f2;color:#be123c;padding:10px;border-radius:8px;margin-bottom:12px;font-weight:bold">🔒 هذا الامتحان مغلق تماماً ودرجاته للعرض فقط.</div>` : ''}
     
-    <div style="margin-bottom:10px;font-size:12px;color:#64748b;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+    <div style="margin-bottom:10px;font-size:12px;color:#64748b;display:flex;justify-content:space-between;align-items:center">
       <span>نوع المستهدف: <b style="color:#0369a1">${targetLabel}</b></span>
       <span>عدد الطلاب المستهدفين: <b>${targetStudents.length} طالب</b></span>
     </div>
 
-    <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table>
+    <div class="table-wrap"><table>
       <thead>
         <tr style="background:#f1f5f9">
           <th>اسم الطالب</th>
-          <th>الصف</th>
+          <th>الصف / المرحلة</th>
           <th>الدرجة من 100</th>
           <th>إجراء الرصد المباشر</th>
         </tr>
@@ -5035,7 +4870,7 @@ function gradeExamModal(examId){
               <td><b>${esc(st.name)}</b></td>
               <td><span class="tag" style="background:#e0f2fe;color:#0369a1">${esc(st.grade)}</span></td>
               <td>
-                <input type="number" id="grade_val_${st.id}" value="${scoreVal !== undefined ? scoreVal : ''}" ${isLocked ? 'readonly disabled' : ''} placeholder="مثال: 95" min="0" max="100" style="width:100px;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font-weight:bold">
+                <input type="number" id="grade_val_${st.id}" value="${scoreVal !== undefined ? scoreVal : ''}" ${isLocked ? 'readonly disabled' : ''} placeholder="مثال: 95" min="0" max="100" style="width:100px;padding:6px;border:1px solid #cbd5e1;border-radius:6px">
               </td>
               <td>
                 ${!isLocked ? `<button class="small success" onclick="saveStudentExamGrade('${examId}','${st.id}','${esc(st.name)}')">💾 حفظ الدرجة المزامنة</button>` : '<span class="tag">محفوظ 🔒</span>'}
@@ -5053,90 +4888,6 @@ function gradeExamModal(examId){
   `;
   
   openModal();
-}
-
-// دالة مساعدة لتسمية المجموعات
-function xGroupTitle(ex){
-  if(ex.groupName) return ex.groupName;
-  let grp = (data.groups || []).find(g => String(g.id) === String(ex.groupId));
-  return grp ? grp.name : (ex.gradeFilter || 'مجموعة');
-}
-
-// 2️⃣ دالة حفظ وتحديث درجة طالب فردي ومزامنتها فوراً مع بوابة ولي الأمر
-async function saveStudentExamGrade(examId, studentId, studentName){
-  let inputEl = $(`grade_val_${studentId}`);
-  if(!inputEl) return;
-
-  let valStr = inputEl.value.trim();
-  if(valStr === ""){
-    toast("⚠️ برجاء إدخال درجة أولاً");
-    return;
-  }
-
-  let scoreNum = Number(valStr);
-  if(isNaN(scoreNum) || scoreNum < 0){
-    toast("⚠️ الدرجة غير صحيحة");
-    return;
-  }
-
-  let ex = (data.exams || []).find(x => String(x.id) === String(examId));
-  let examTitle = ex ? ex.title : "اختبار";
-  let examDate = ex ? (ex.date || nowDate()) : nowDate();
-  let points = Math.round(scoreNum / 2);
-
-  // أ) تحديث كائن الدرجات داخل الامتحان نفسـه
-  let newScores = ex?.scores || {};
-  newScores[studentId] = scoreNum;
-  await col("exams").doc(examId).set({ scores: newScores }, { merge: true });
-
-  // ب) التحديث أو الإضافة في سجل الحضور والدرجات (لتظهر في بوابة ولي الأمر)
-  let existingAtt = (data.attendance || []).find(a => String(a.studentId) === String(studentId) && String(a.examId) === String(examId));
-  
-  if(existingAtt){
-    await col("attendance").doc(existingAtt.id).set({
-      score: scoreNum,
-      notes: `درجة اختبار (${examTitle}): ${scoreNum} / 100`,
-      pointsGained: points
-    }, { merge: true });
-  } else {
-    await col("attendance").add({
-      studentId: String(studentId),
-      studentName: studentName,
-      date: examDate,
-      status: "حضر الامتحان",
-      score: scoreNum,
-      examId: String(examId),
-      examTitle: examTitle,
-      notes: `درجة اختبار (${examTitle}): ${scoreNum} / 100`,
-      pointsGained: points,
-      teacherId: user.uid
-    });
-  }
-
-  // ج) إضافة نقاط الكرت الذهبي والمكافآت
-  await col("rewards").add({ 
-    studentId: String(studentId), 
-    studentName: studentName, 
-    points: points, 
-    title: `درجة اختبار: ${examTitle} (${scoreNum}/100)`, 
-    date: examDate, 
-    teacherId: user.uid 
-  });
-
-  await loadAll();
-  playBeep(true);
-  toast(`✅ تم حفظ ومزامنة درجة (${studentName}) بنجاح!`);
-}
-
-// 3️⃣ دالة إغلاق الامتحان نهائياً
-async function lockExamPermanently(examId){
-  if(!confirm("هل أنت تأكد من إغلاق هذا الامتحان نهائياً؟ لن تتمكن من تعديل الدرجات بعد الإغلاق.")) return;
-
-  await col("exams").doc(examId).set({ isLocked: true }, { merge: true });
-  await loadAll();
-  playBeep(true);
-  toast("🔒 تم إغلاق الامتحان ونشر كافة الدرجات بنجاح!");
-  gradeExamModal(examId);
 }
 
 async function saveStudentExamGrade(examId, studentId, studentName){
